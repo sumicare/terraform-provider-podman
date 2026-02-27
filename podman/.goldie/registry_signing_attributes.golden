@@ -1,0 +1,12 @@
+[
+  "attestation_path",
+  "cosign_key_path",
+  "cosign_key_path_out",
+  "cosign_password",
+  "cosign_public_key_out",
+  "fulcio_url",
+  "keyless",
+  "predicate_type",
+  "rekor_url",
+  "sbom_path"
+]

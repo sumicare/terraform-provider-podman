@@ -1,0 +1,10 @@
+[
+  "attestation",
+  "build",
+  "context_hash",
+  "id",
+  "keep_locally",
+  "name",
+  "repo_digest",
+  "sbom"
+]

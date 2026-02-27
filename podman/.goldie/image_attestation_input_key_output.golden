@@ -1,0 +1,4 @@
+{
+  "signer_key_path_out": "/my/provided/key.pem",
+  "signer_public_key_out": ""
+}

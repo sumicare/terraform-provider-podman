@@ -1,0 +1,11 @@
+[
+  "archivista_server",
+  "attestors",
+  "enable_archivista",
+  "export_slsa",
+  "output_path",
+  "signer_key_path",
+  "signer_key_path_out",
+  "signer_public_key_out",
+  "step_name"
+]

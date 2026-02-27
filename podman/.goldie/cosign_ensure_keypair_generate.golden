@@ -1,0 +1,9 @@
+{
+  "priv_key_file": "cosign.key",
+  "pub_key_file": "cosign.pub",
+  "priv_header": "-----BEGIN ENCRYPTED SIGSTORE PRIVATE KEY-----",
+  "pub_header": "-----BEGIN PUBLIC KEY-----",
+  "reused": false,
+  "has_priv_pem": true,
+  "has_pub_pem": true
+}
