@@ -1,5 +1,4 @@
 /*
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,35 +30,21 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
-// Compile-time check to ensure PodmanProvider satisfies the provider.Provider interface.
-var (
-	_ provider.Provider = &PodmanProvider{}
-)
+var _ provider.Provider = &PodmanProvider{}
 
-// PodmanProvider is the provider implementation using Plugin Framework.
 type PodmanProvider struct {
-	// version is set to the provider version on release, "dev" when the
-	// provider is built and ran locally, and "test" when running acceptance tests
 	version string
 }
 
-// PodmanProviderModel describes the provider data model.
 type PodmanProviderModel struct {
 	URI types.String `tfsdk:"uri"`
 }
 
-// PodmanProviderConfig holds the resolved provider configuration.
 type PodmanProviderConfig struct {
-	// URI is the podman socket URI (e.g. unix:///run/podman/podman.sock).
-	URI string
-	// HTTPClient is the HTTP client configured to talk to the podman socket.
+	URI        string
 	HTTPClient *http.Client
-	// BaseURL is the base URL for podman REST API requests.
-	BaseURL string
+	BaseURL    string
 }
-
-// Configure prepares the provider for data sources and resources.
-//
 
 func (p *PodmanProvider) Configure(
 	ctx context.Context,
@@ -76,17 +61,14 @@ func (p *PodmanProvider) Configure(
 
 	config := &PodmanProviderConfig{}
 
-	// Resolve URI from config or environment
 	if !data.URI.IsNull() && !data.URI.IsUnknown() {
 		config.URI = data.URI.ValueString()
 	} else if uri := os.Getenv("PODMAN_HOST"); uri != "" {
 		config.URI = uri
 	} else {
-		// Default to the rootless user socket
 		config.URI = fmt.Sprintf("unix:///run/user/%d/podman/podman.sock", os.Getuid())
 	}
 
-	// Create HTTP client for the podman socket
 	httpClient, baseURL, err := newPodmanHTTPClient(config.URI)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -107,12 +89,10 @@ func (p *PodmanProvider) Configure(
 	resp.ResourceData = config
 }
 
-// DataSources defines the data sources implemented in the provider.
 func (*PodmanProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return nil
 }
 
-// Metadata returns the provider type name.
 func (p *PodmanProvider) Metadata(
 	_ context.Context,
 	_ provider.MetadataRequest,
@@ -122,7 +102,6 @@ func (p *PodmanProvider) Metadata(
 	resp.Version = p.version
 }
 
-// Resources defines the resources implemented in the provider.
 func (*PodmanProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewImageResource,
@@ -130,7 +109,6 @@ func (*PodmanProvider) Resources(_ context.Context) []func() resource.Resource {
 	}
 }
 
-// Schema defines the provider-level schema for configuration data.
 func (*PodmanProvider) Schema(
 	_ context.Context,
 	_ provider.SchemaRequest,
@@ -148,7 +126,6 @@ func (*PodmanProvider) Schema(
 	}
 }
 
-// New returns a new provider instance.
 func New(version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &PodmanProvider{

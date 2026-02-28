@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -76,6 +33,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/sebdah/goldie/v2"
@@ -250,7 +208,16 @@ func TestImageResource_Metadata(t *testing.T) {
 
 func TestImageResource_Configure(t *testing.T) {
 	cfg := &PodmanProviderConfig{URI: "unix:///test.sock", BaseURL: "http://d"}
-	testResourceConfigure(t, cfg, func() any { return &ImageResource{} })
+	testResourceConfigure(t, cfg,
+		func() configurableResource { return &ImageResource{} },
+		func(r configurableResource) *PodmanProviderConfig {
+			if ir, ok := r.(*ImageResource); ok {
+				return ir.config
+			}
+
+			return nil
+		},
+	)
 }
 
 func TestExtractBuildArgs(t *testing.T) {
@@ -687,8 +654,8 @@ func TestImageResource_Create_DefaultSBOMProvenance(t *testing.T) {
 
 	// Plan with null sbom block — provenance should still be applied.
 	vals := minimalImagePlanVals("localhost/test:prov", ".")
-	plan := makeImagePlan(t, vals)
-	state := makeImageState(t, vals)
+	plan := makePlan(t, &ImageResource{}, vals)
+	state := makeState(t, &ImageResource{}, vals)
 
 	createResp := &resource.CreateResponse{State: state}
 	r.Create(t.Context(), resource.CreateRequest{Plan: plan}, createResp)
@@ -1208,8 +1175,8 @@ func TestContextHashPlanModifier_ValidContext(t *testing.T) {
 		t.Fatalf("failed to set permissions for a.txt: %v", err)
 	}
 
-	plan := makeImagePlan(t, minimalImagePlanVals("test:v1", dir))
-	state := makeImageState(t, minimalImageStateVals("test:v1"))
+	plan := makePlan(t, &ImageResource{}, minimalImagePlanVals("test:v1", dir))
+	state := makeState(t, &ImageResource{}, minimalImageStateVals("test:v1"))
 
 	m := contextHashPlanModifier{}
 	resp := &planmodifier.StringResponse{PlanValue: types.StringUnknown()}
@@ -1239,8 +1206,8 @@ func TestContextHashPlanModifier_InvalidContext(t *testing.T) {
 	dir := t.TempDir()
 
 	vals := minimalImagePlanVals("test:v1", dir)
-	plan := makeImagePlan(t, vals)
-	state := makeImageState(t, minimalImageStateVals("test:v1"))
+	plan := makePlan(t, &ImageResource{}, vals)
+	state := makeState(t, &ImageResource{}, minimalImageStateVals("test:v1"))
 
 	m := contextHashPlanModifier{}
 	resp := &planmodifier.StringResponse{PlanValue: types.StringUnknown()}
@@ -1269,8 +1236,8 @@ func TestContextHashPlanModifier_NilBuild(t *testing.T) {
 		"build":        tftypes.NewValue(buildObjectType(), nil),
 	}
 
-	plan := makeImagePlan(t, vals)
-	state := makeImageState(t, minimalImageStateVals("test:v1"))
+	plan := makePlan(t, &ImageResource{}, vals)
+	state := makeState(t, &ImageResource{}, minimalImageStateVals("test:v1"))
 
 	m := contextHashPlanModifier{}
 	resp := &planmodifier.StringResponse{PlanValue: types.StringUnknown()}
@@ -1654,47 +1621,19 @@ func TestImageResource_Create(t *testing.T) {
 		},
 	}
 
-	// Convert tests to the expected format for shared helper
-	sharedTests := make([]struct {
-		handler    http.HandlerFunc
-		planVals   func() map[string]tftypes.Value
-		checkState func(*testing.T, any)
-		name       string
-		wantErr    bool
-	}, len(tests))
-
-	for i, tt := range tests {
-		sharedTests[i] = struct {
-			handler    http.HandlerFunc
-			planVals   func() map[string]tftypes.Value
-			checkState func(*testing.T, any)
-			name       string
-			wantErr    bool
-		}{
-			name:     tt.name,
-			handler:  tt.handler,
-			planVals: tt.planVals,
-			wantErr:  tt.wantErr,
-		}
-		if tt.checkState != nil {
-			fn := tt.checkState
-			sharedTests[i].checkState = func(t *testing.T, data any) {
-				t.Helper()
-
-				if imgData, ok := data.(ImageResourceModel); ok {
-					fn(t, imgData)
-				}
-			}
-		}
-	}
-
-	testResourceCreate(t, sharedTests,
-		makeImagePlan,
-		makeImageState,
-		func(cfg *PodmanProviderConfig) any {
+	testResourceCreate(t, tests,
+		func(t *testing.T, vals map[string]tftypes.Value) tfsdk.Plan {
+			t.Helper()
+			return makePlan(t, &ImageResource{}, vals)
+		},
+		func(t *testing.T, vals map[string]tftypes.Value) tfsdk.State {
+			t.Helper()
+			return makeState(t, &ImageResource{}, vals)
+		},
+		func(cfg *PodmanProviderConfig) resource.Resource {
 			return &ImageResource{config: cfg}
 		},
-		func(resp *resource.CreateResponse) any {
+		func(resp *resource.CreateResponse) ImageResourceModel {
 			var data ImageResourceModel
 			resp.State.Get(context.Background(), &data)
 
@@ -1755,7 +1694,7 @@ func TestImageResource_Read_CRUD(t *testing.T) {
 				BaseURL:    server.URL,
 			}}
 
-			state := makeImageState(t, minimalImageStateVals("localhost/test:v1"))
+			state := makeState(t, &ImageResource{}, minimalImageStateVals("localhost/test:v1"))
 			readResp := &resource.ReadResponse{State: state}
 			r.Read(t.Context(), resource.ReadRequest{State: state}, readResp)
 
@@ -1839,7 +1778,7 @@ func TestImageResource_Delete_CRUD(t *testing.T) {
 				vals["keep_locally"] = tftypes.NewValue(tftypes.Bool, true)
 			}
 
-			state := makeImageState(t, vals)
+			state := makeState(t, &ImageResource{}, vals)
 			deleteResp := &resource.DeleteResponse{State: state}
 			r.Delete(t.Context(), resource.DeleteRequest{State: state}, deleteResp)
 
@@ -1860,7 +1799,7 @@ func TestImageResource_Delete_CRUD(t *testing.T) {
 
 func TestImageResource_ImportState(t *testing.T) {
 	r := &ImageResource{}
-	state := makeImageState(t, minimalImageStateVals("localhost/test:v1"))
+	state := makeState(t, &ImageResource{}, minimalImageStateVals("localhost/test:v1"))
 
 	importResp := &resource.ImportStateResponse{State: state}
 	r.ImportState(t.Context(), resource.ImportStateRequest{ID: "sha256:imported"}, importResp)

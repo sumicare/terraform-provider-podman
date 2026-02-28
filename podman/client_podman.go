@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -77,13 +34,11 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
-// PodmanClient wraps an HTTP client connected to the podman socket for image operations.
 type PodmanClient struct {
 	client  *http.Client
 	baseURL string
 }
 
-// NewPodmanClient creates a new PodmanClient from the provider config.
 func NewPodmanClient(config *PodmanProviderConfig) *PodmanClient {
 	return &PodmanClient{
 		client:  config.HTTPClient,
@@ -91,7 +46,6 @@ func NewPodmanClient(config *PodmanProviderConfig) *PodmanClient {
 	}
 }
 
-// newPodmanHTTPClient creates an HTTP client connected to a Unix or TCP podman socket.
 func newPodmanHTTPClient(uri string) (*http.Client, string, error) {
 	if after, ok := strings.CutPrefix(uri, "unix://"); ok {
 		socketPath := after
@@ -113,7 +67,6 @@ func newPodmanHTTPClient(uri string) (*http.Client, string, error) {
 	return nil, "", fmt.Errorf("unsupported podman URI scheme: %s", uri)
 }
 
-// doRequest performs an HTTP request against the podman API and returns the response.
 func (c *PodmanClient) doRequest(
 	ctx context.Context,
 	method, path string,
@@ -133,14 +86,12 @@ func (c *PodmanClient) doRequest(
 	return c.client.Do(req) //nolint:gosec // reqURL is constructed from baseURL + constant path
 }
 
-// BuildImage builds an image from a Containerfile.
 func (c *PodmanClient) BuildImage(ctx context.Context, opts ImageBuildOpts) error {
 	tflog.Info(ctx, "Building image", map[string]any{
 		"name":    opts.Tag,
 		"context": opts.ContextDir,
 	})
 
-	// Create a tar archive of the context directory
 	contextTar, err := tarDirectory(opts.ContextDir)
 	if err != nil {
 		return fmt.Errorf("could not create context archive: %w", err)
@@ -177,7 +128,6 @@ func (c *PodmanClient) BuildImage(ctx context.Context, opts ImageBuildOpts) erro
 	}
 	defer resp.Body.Close()
 
-	// Read the build stream to check for errors
 	decoder := json.NewDecoder(resp.Body)
 	for decoder.More() {
 		var event map[string]any
@@ -203,7 +153,6 @@ func (c *PodmanClient) BuildImage(ctx context.Context, opts ImageBuildOpts) erro
 	return nil
 }
 
-// PushImage pushes an image to a registry.
 func (c *PodmanClient) PushImage(
 	ctx context.Context,
 	name, username, password string,
@@ -228,7 +177,6 @@ func (c *PodmanClient) PushImage(
 	}
 	defer resp.Body.Close()
 
-	// Read the push stream to find the digest or error
 	var digest string
 
 	decoder := json.NewDecoder(resp.Body)
@@ -260,7 +208,6 @@ func (c *PodmanClient) PushImage(
 	return digest, nil
 }
 
-// InspectImage inspects a local image and returns its metadata.
 func (c *PodmanClient) InspectImage(ctx context.Context, name string) (*ImageInspectResult, error) {
 	tflog.Debug(ctx, "Inspecting image", map[string]any{"name": name})
 
@@ -296,7 +243,6 @@ func (c *PodmanClient) InspectImage(ctx context.Context, name string) (*ImageIns
 	return result, nil
 }
 
-// RemoveImage removes a local image.
 func (c *PodmanClient) RemoveImage(ctx context.Context, name string) error {
 	tflog.Debug(ctx, "Removing image", map[string]any{"name": name})
 
@@ -320,7 +266,6 @@ func (c *PodmanClient) RemoveImage(ctx context.Context, name string) error {
 	return nil
 }
 
-// ImageExists checks if an image exists locally.
 func (c *PodmanClient) ImageExists(ctx context.Context, name string) (bool, error) {
 	resp, err := c.doRequest(ctx, http.MethodGet, "/images/"+url.PathEscape(name)+"/exists", nil)
 	if err != nil {
@@ -331,7 +276,6 @@ func (c *PodmanClient) ImageExists(ctx context.Context, name string) (bool, erro
 	return resp.StatusCode == http.StatusNoContent, nil
 }
 
-// ImageBuildOpts holds the parameters for building an image.
 type ImageBuildOpts struct {
 	BuildArgs  map[string]string
 	Tag        string
@@ -339,14 +283,12 @@ type ImageBuildOpts struct {
 	Pull       bool
 }
 
-// ImageInspectResult holds the result of an image inspection.
 type ImageInspectResult struct {
 	ID         string
 	RepoDigest string
 	Size       int64
 }
 
-// tarDirectory creates a tar archive from a directory for the build context.
 func tarDirectory(dir string) (io.Reader, error) {
 	var buf bytes.Buffer
 

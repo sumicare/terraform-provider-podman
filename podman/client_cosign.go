@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -72,15 +29,12 @@ import (
 	"github.com/sigstore/cosign/v2/pkg/cosign"
 )
 
-// CosignClient wraps the cosign Go library for image signing and attestation.
 type CosignClient struct{}
 
-// NewCosignClient creates a new CosignClient.
 func NewCosignClient() *CosignClient {
 	return &CosignClient{}
 }
 
-// SignOpts holds parameters for signing an image with cosign.
 type SignOpts struct {
 	ImageRef  string
 	KeyPath   string
@@ -90,7 +44,6 @@ type SignOpts struct {
 	Keyless   bool
 }
 
-// AttestOpts holds parameters for attaching an attestation to an image.
 type AttestOpts struct {
 	ImageRef      string
 	KeyPath       string
@@ -102,7 +55,6 @@ type AttestOpts struct {
 	Keyless       bool
 }
 
-// SignImage signs an OCI image using cosign (key-based or keyless).
 func (c *CosignClient) SignImage(ctx context.Context, opts SignOpts) error {
 	tflog.Info(ctx, "Signing image with cosign", map[string]any{
 		"image_ref": opts.ImageRef,
@@ -114,7 +66,7 @@ func (c *CosignClient) SignImage(ctx context.Context, opts SignOpts) error {
 			return fmt.Errorf("failed to set COSIGN_PASSWORD: %w", err)
 		}
 
-		defer os.Unsetenv("COSIGN_PASSWORD") //nolint:errcheck // best-effort cleanup
+		defer os.Unsetenv("COSIGN_PASSWORD")
 	}
 
 	ko := options.KeyOpts{
@@ -150,7 +102,6 @@ func (c *CosignClient) SignImage(ctx context.Context, opts SignOpts) error {
 	return nil
 }
 
-// AttestImage attaches an in-toto attestation to an OCI image using cosign attest.
 func (c *CosignClient) AttestImage(ctx context.Context, opts AttestOpts) error {
 	tflog.Info(ctx, "Attaching attestation to image", map[string]any{
 		"image_ref":      opts.ImageRef,
@@ -163,7 +114,7 @@ func (c *CosignClient) AttestImage(ctx context.Context, opts AttestOpts) error {
 			return fmt.Errorf("failed to set COSIGN_PASSWORD: %w", err)
 		}
 
-		defer os.Unsetenv("COSIGN_PASSWORD") //nolint:errcheck // best-effort cleanup
+		defer os.Unsetenv("COSIGN_PASSWORD")
 	}
 
 	predicateType := opts.PredicateType
@@ -201,7 +152,6 @@ func (c *CosignClient) AttestImage(ctx context.Context, opts AttestOpts) error {
 	return nil
 }
 
-// GenerateKeyPairResult holds the paths and PEM bytes of a generated cosign key pair.
 type GenerateKeyPairResult struct {
 	PrivateKeyPath string
 	PublicKeyPath  string
@@ -210,11 +160,8 @@ type GenerateKeyPairResult struct {
 	Reused         bool
 }
 
-// EnsureKeyPair returns an existing cosign key pair from dir if both
-// cosign.key and cosign.pub already exist, otherwise generates a new
-// ECDSA key pair (with an empty password) and writes it there.
-// This allows multiple resources in the same root module to share a
-// single auto-generated key.
+// EnsureKeyPair reuses an existing key pair from dir, or generates a new one.
+// Multiple resources in the same root module share a single auto-generated key.
 func (c *CosignClient) EnsureKeyPair(
 	ctx context.Context,
 	dir string,
@@ -222,7 +169,6 @@ func (c *CosignClient) EnsureKeyPair(
 	privPath := filepath.Join(dir, "cosign.key")
 	pubPath := filepath.Join(dir, "cosign.pub")
 
-	// Reuse existing key pair if both files are present.
 	privBytes, privErr := os.ReadFile(privPath)
 	pubBytes, pubErr := os.ReadFile(pubPath)
 
@@ -241,7 +187,6 @@ func (c *CosignClient) EnsureKeyPair(
 		}, nil
 	}
 
-	// Generate a new key pair.
 	tflog.Info(ctx, "Generating cosign key pair", map[string]any{"dir": dir})
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {

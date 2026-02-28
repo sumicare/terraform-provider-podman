@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -81,15 +38,12 @@ import (
 	"github.com/in-toto/go-witness/timestamp"
 )
 
-// WitnessClient wraps the go-witness library for in-toto attestation.
 type WitnessClient struct{}
 
-// NewWitnessClient creates a new WitnessClient.
 func NewWitnessClient() *WitnessClient {
 	return &WitnessClient{}
 }
 
-// WitnessRunOpts holds parameters for creating a witness attestation around a build.
 type WitnessRunOpts struct {
 	StepName         string
 	SignerKeyPath    string
@@ -101,8 +55,7 @@ type WitnessRunOpts struct {
 	EnableArchivista bool
 }
 
-// AttestBuild wraps a build function with in-toto witness attestation,
-// recording materials before and products after the build.
+// AttestBuild wraps buildFn with in-toto witness attestation.
 func (c *WitnessClient) AttestBuild(
 	ctx context.Context,
 	opts WitnessRunOpts,
@@ -113,7 +66,6 @@ func (c *WitnessClient) AttestBuild(
 		"output_path": opts.OutputPath,
 	})
 
-	// Load the signing key
 	keyFile, err := os.Open(opts.SignerKeyPath)
 	if err != nil {
 		return fmt.Errorf("failed to open signer key %s: %w", opts.SignerKeyPath, err)
@@ -125,7 +77,6 @@ func (c *WitnessClient) AttestBuild(
 		return fmt.Errorf("failed to load signer key: %w", err)
 	}
 
-	// Initialize attestors
 	attestors := []attestation.Attestor{
 		material.New(),
 		product.New(),
@@ -134,13 +85,11 @@ func (c *WitnessClient) AttestBuild(
 		),
 	}
 
-	// Create attestation context with attestors as second argument
 	attCtx, err := attestation.NewContext(opts.StepName, attestors)
 	if err != nil {
 		return fmt.Errorf("failed to create attestation context: %w", err)
 	}
 
-	// Run attestor collection (no arguments)
 	if attestErr := attCtx.RunAttestors(); attestErr != nil {
 		tflog.Warn(
 			ctx,
@@ -149,16 +98,13 @@ func (c *WitnessClient) AttestBuild(
 		)
 	}
 
-	// Execute the actual build
 	if buildErr := buildFn(); buildErr != nil {
 		return fmt.Errorf("build failed during attestation: %w", buildErr)
 	}
 
-	// Collect subjects from completed attestors
 	completed := attCtx.CompletedAttestors()
 	subjects := collectSubjects(completed)
 
-	// Create the in-toto statement with predicate
 	predicate, err := json.Marshal(map[string]any{
 		"buildType": "podman-provider",
 		"builder":   map[string]string{"id": "sumicare-provider-podman"},
@@ -172,13 +118,11 @@ func (c *WitnessClient) AttestBuild(
 		return fmt.Errorf("failed to create in-toto statement: %w", err)
 	}
 
-	// Serialize statement as the DSSE body
 	statementBytes, err := json.Marshal(statement)
 	if err != nil {
 		return fmt.Errorf("failed to marshal in-toto statement: %w", err)
 	}
 
-	// Create DSSE envelope
 	envelope, err := dsse.Sign(
 		intoto.PayloadType,
 		bytes.NewReader(statementBytes),
@@ -189,7 +133,6 @@ func (c *WitnessClient) AttestBuild(
 		return fmt.Errorf("failed to sign attestation envelope: %w", err)
 	}
 
-	// Ensure output directory exists
 	if dir := filepath.Dir(opts.OutputPath); dir != "" {
 		mkdirErr := os.MkdirAll(dir, 0o755)
 		if mkdirErr != nil {
@@ -197,7 +140,6 @@ func (c *WitnessClient) AttestBuild(
 		}
 	}
 
-	// Write envelope to output path
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("failed to marshal attestation envelope: %w", err)
@@ -218,17 +160,14 @@ func (c *WitnessClient) AttestBuild(
 	return nil
 }
 
-// simpleTimestamper implements timestamp.Timestamper for DSSE signing.
 type simpleTimestamper struct{}
 
 func (simpleTimestamper) Timestamp(_ context.Context, _ io.Reader) ([]byte, error) {
 	return time.Now().UTC().MarshalBinary()
 }
 
-// ensure simpleTimestamper implements the interface.
 var _ timestamp.Timestamper = (*simpleTimestamper)(nil)
 
-// collectSubjects extracts subject digests from completed attestors.
 func collectSubjects(
 	completedAttestors []attestation.CompletedAttestor,
 ) map[string]witnessCrypto.DigestSet {

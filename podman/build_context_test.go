@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -65,7 +22,6 @@ import (
 	"testing"
 )
 
-// writeFile is a test helper that writes a file and fails the test on error.
 func writeFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 
@@ -74,7 +30,6 @@ func writeFile(t *testing.T, path string, data []byte) {
 	}
 }
 
-// mkdirAll is a test helper that creates a directory and fails the test on error.
 func mkdirAll(t *testing.T, path string) {
 	t.Helper()
 

@@ -1,9 +1,4 @@
 /*
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,21 +33,15 @@ import (
 	"strings"
 )
 
-// gitRef represents a git repository reference found in an ADD instruction.
 type gitRef struct {
 	URL string
 	Ref string
 }
 
-// varRefPattern matches Dockerfile/Containerfile variable references in both
-// ${VAR} and $VAR forms.
 var varRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
 
-// collectVars parses ARG and ENV declarations from Containerfile content and
-// merges them with the supplied buildArgs. Evaluation order:
-//  1. ARG defaults are collected (last non-empty default wins).
-//  2. buildArgs override any ARG default.
-//  3. ENV values override both ARG defaults and buildArgs (last wins).
+// collectVars parses ARG/ENV declarations and merges with buildArgs.
+// Precedence: ENV > buildArgs > ARG defaults.
 func collectVars(content string, buildArgs map[string]string) map[string]string {
 	argDefaults := make(map[string]string)
 	envValues := make(map[string]string)
@@ -90,21 +79,15 @@ func collectVars(content string, buildArgs map[string]string) map[string]string 
 		}
 	}
 
-	// Start with ARG defaults.
 	vars := make(map[string]string, len(argDefaults)+len(envValues))
 	maps.Copy(vars, argDefaults)
 
-	// Build args override ARG defaults.
 	maps.Copy(vars, buildArgs)
-
-	// ENV values take final precedence.
 	maps.Copy(vars, envValues)
 
 	return vars
 }
 
-// splitVarDecl parses an ARG declaration: "KEY=VALUE" or bare "KEY".
-// Surrounding quotes on the value are stripped.
 func splitVarDecl(s string) (name, value string) {
 	s = strings.TrimSpace(s)
 
@@ -118,16 +101,12 @@ func splitVarDecl(s string) (name, value string) {
 	return name, value
 }
 
-// parseEnvDecl parses an ENV declaration. Supported forms:
-//   - ENV KEY=VALUE [KEY2=VALUE2 …]
-//   - ENV KEY VALUE  (legacy single-variable form)
 func parseEnvDecl(s string) map[string]string {
 	result := make(map[string]string)
 
 	s = strings.TrimSpace(s)
 
 	if !strings.Contains(s, "=") {
-		// Legacy form: ENV KEY VALUE
 		parts := strings.SplitN(s, " ", 2)
 		if len(parts) == 2 {
 			result[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
@@ -136,7 +115,6 @@ func parseEnvDecl(s string) map[string]string {
 		return result
 	}
 
-	// Modern form: KEY=VALUE [KEY2=VALUE2 …]
 	for field := range strings.FieldsSeq(s) {
 		if idx := strings.Index(field, "="); idx > 0 {
 			result[field[:idx]] = strings.Trim(field[idx+1:], `"'`)
@@ -146,8 +124,6 @@ func parseEnvDecl(s string) map[string]string {
 	return result
 }
 
-// interpolateVars replaces ${VAR} and $VAR references in s using the supplied
-// variable map. Unresolved references are left as-is.
 func interpolateVars(s string, vars map[string]string) string {
 	return varRefPattern.ReplaceAllStringFunc(s, func(match string) string {
 		var name string
@@ -165,10 +141,8 @@ func interpolateVars(s string, vars map[string]string) string {
 	})
 }
 
-// BuildContextHash computes a SHA256 hash of the build context. The hash
-// includes the Containerfile content, all local files referenced by COPY/ADD
-// instructions, and resolved commit hashes for any git-based ADD instructions.
-// ARG/ENV declarations in the Containerfile are interpolated using buildArgs.
+// BuildContextHash computes a SHA256 over the Containerfile, all COPY/ADD
+// referenced local files, and resolved git commit hashes for ADD git refs.
 func BuildContextHash(
 	ctx context.Context,
 	contextDir string,
@@ -198,11 +172,9 @@ func BuildContextHash(
 
 	h := sha256.New()
 
-	// Hash Containerfile content.
 	h.Write(cfContent)
 	h.Write([]byte("\x00"))
 
-	// Hash local paths (sorted for determinism).
 	sort.Strings(localPaths)
 
 	for _, p := range localPaths {
@@ -214,7 +186,6 @@ func BuildContextHash(
 		fmt.Fprintf(h, "local:%s:%s\n", p, pathHash)
 	}
 
-	// Resolve and hash git refs (sorted for determinism).
 	sort.Slice(gitRefs, func(i, j int) bool {
 		return gitRefs[i].URL+gitRefs[i].Ref < gitRefs[j].URL+gitRefs[j].Ref
 	})
@@ -233,8 +204,6 @@ func BuildContextHash(
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// findContainerfile locates the Containerfile in the context directory,
-// checking for "Containerfile" first, then "Dockerfile".
 func findContainerfile(contextDir string) (string, error) {
 	for _, name := range []string{"Containerfile", "Dockerfile"} {
 		p := filepath.Join(contextDir, name)
@@ -246,10 +215,8 @@ func findContainerfile(contextDir string) (string, error) {
 	return "", fmt.Errorf("no Containerfile or Dockerfile found in %s", contextDir)
 }
 
-// parseContainerfileSources parses a Containerfile and extracts local file
-// paths from COPY instructions and git references from ADD instructions.
-// Multi-stage COPY (--from=…) instructions are skipped. Variable references
-// in source paths are interpolated using vars.
+// parseContainerfileSources extracts local paths (COPY) and git refs (ADD)
+// from a Containerfile. Skips multi-stage COPY --from and interpolates vars.
 func parseContainerfileSources(
 	containerfilePath string,
 	vars map[string]string,
@@ -294,7 +261,6 @@ func parseContainerfileSources(
 
 		argStr := line[strings.Index(line, " ")+1:]
 
-		// Skip multi-stage COPY --from=…
 		if isCopy && hasFlag(argStr, "from") {
 			continue
 		}
@@ -320,9 +286,6 @@ func parseContainerfileSources(
 	return localPaths, gitRefs, scanner.Err()
 }
 
-// parseInstructionArgs splits COPY/ADD arguments, skipping flags (--xxx=yyy).
-// It returns source paths (all except the last arg, which is the destination)
-// and the destination. Handles both shell form and JSON form.
 func parseInstructionArgs(argStr string) (sources []string, dest string) {
 	argStr = strings.TrimSpace(argStr)
 
@@ -347,7 +310,6 @@ func parseInstructionArgs(argStr string) (sources []string, dest string) {
 	return parts[:len(parts)-1], parts[len(parts)-1]
 }
 
-// parseJSONArgs parses JSON-form COPY/ADD args: ["src1", "src2", "dest"].
 func parseJSONArgs(argStr string) (sources []string, dest string) {
 	argStr = strings.Trim(argStr, "[] ")
 
@@ -369,7 +331,6 @@ func parseJSONArgs(argStr string) (sources []string, dest string) {
 	return parts[:len(parts)-1], parts[len(parts)-1]
 }
 
-// hasFlag checks if a --flag with the given name exists in the args string.
 func hasFlag(argStr, flagName string) bool {
 	for part := range strings.FieldsSeq(argStr) {
 		lower := strings.ToLower(part)
@@ -381,7 +342,6 @@ func hasFlag(argStr, flagName string) bool {
 	return false
 }
 
-// isGitURL returns true if the source looks like a git repository reference.
 func isGitURL(src string) bool {
 	if strings.HasPrefix(src, "git@") || strings.HasPrefix(src, "git://") {
 		return true
@@ -391,22 +351,18 @@ func isGitURL(src string) bool {
 		(strings.HasPrefix(src, "https://") || strings.HasPrefix(src, "http://"))
 }
 
-// isRemoteURL returns true if the source is a remote URL (http/https/ftp).
 func isRemoteURL(src string) bool {
 	return strings.HasPrefix(src, "http://") ||
 		strings.HasPrefix(src, "https://") ||
 		strings.HasPrefix(src, "ftp://")
 }
 
-// splitGitRef splits a git URL#ref into the base URL and the ref.
-// For example "git@github.com:org/repo.git#v1.0" → ("git@github.com:org/repo.git", "v1.0").
-// The optional :subdir suffix on the ref is stripped.
+// splitGitRef splits "url#ref:subdir" → (url, ref). Defaults to "HEAD".
 func splitGitRef(src string) (url, ref string) {
 	if idx := strings.Index(src, "#"); idx > 0 {
 		url = src[:idx]
 		ref = src[idx+1:]
 
-		// Strip subdir from ref (format: ref:subdir).
 		if cidx := strings.Index(ref, ":"); cidx > 0 {
 			ref = ref[:cidx]
 		}
@@ -418,7 +374,6 @@ func splitGitRef(src string) (url, ref string) {
 	return url, ref
 }
 
-// resolveGitRef uses git ls-remote to resolve a git URL + ref to a commit hash.
 func resolveGitRef(ctx context.Context, url, ref string) (string, error) {
 	if ref == "" {
 		ref = "HEAD"
@@ -444,8 +399,6 @@ func resolveGitRef(ctx context.Context, url, ref string) (string, error) {
 	return parts[0], nil
 }
 
-// hashPath computes a SHA256 hash of a file or directory relative to basePath.
-// Glob patterns in relPath are expanded.
 func hashPath(basePath, relPath string) (string, error) {
 	fullPattern := filepath.Join(basePath, relPath)
 
@@ -497,7 +450,6 @@ func hashPath(basePath, relPath string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// hashFile computes the SHA256 hash of a single file's content.
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -513,8 +465,7 @@ func hashFile(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// hashDirectory computes a deterministic SHA256 hash of a directory tree.
-// Hidden directories (starting with ".") are skipped.
+// hashDirectory hashes a directory tree. Hidden directories are skipped.
 func hashDirectory(dir string) (string, error) {
 	h := sha256.New()
 

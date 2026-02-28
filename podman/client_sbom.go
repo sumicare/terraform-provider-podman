@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -73,22 +30,18 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
-// SBOMClient wraps the syft library for SBOM generation.
 type SBOMClient struct{}
 
-// NewSBOMClient creates a new SBOMClient.
 func NewSBOMClient() *SBOMClient {
 	return &SBOMClient{}
 }
 
-// SBOMOpts holds parameters for SBOM generation.
 type SBOMOpts struct {
 	ImageRef   string
 	OutputPath string
 	Format     string // "cyclonedx" or "spdx-json"
 }
 
-// GenerateSBOM scans a container image and produces an SBOM in CycloneDX or SPDX format.
 func (c *SBOMClient) GenerateSBOM(ctx context.Context, opts SBOMOpts) error {
 	tflog.Info(ctx, "Generating SBOM with syft", map[string]any{
 		"image":       opts.ImageRef,
@@ -96,7 +49,6 @@ func (c *SBOMClient) GenerateSBOM(ctx context.Context, opts SBOMOpts) error {
 		"format":      opts.Format,
 	})
 
-	// Ensure output directory exists
 	if dir := filepath.Dir(opts.OutputPath); dir != "" {
 		err := os.MkdirAll(dir, 0o755)
 		if err != nil {
@@ -104,19 +56,16 @@ func (c *SBOMClient) GenerateSBOM(ctx context.Context, opts SBOMOpts) error {
 		}
 	}
 
-	// Resolve the image source via syft's provider chain
 	src, err := syft.GetSource(ctx, opts.ImageRef, syft.DefaultGetSourceConfig())
 	if err != nil {
 		return fmt.Errorf("failed to create image source for %s: %w", opts.ImageRef, err)
 	}
 
-	// Create SBOM
 	sbomResult, err := syft.CreateSBOM(ctx, src, syft.DefaultCreateSBOMConfig())
 	if err != nil {
 		return fmt.Errorf("failed to create SBOM for %s: %w", opts.ImageRef, err)
 	}
 
-	// Select encoder based on format
 	format := opts.Format
 	if format == "" {
 		format = "cyclonedx"
@@ -139,13 +88,11 @@ func (c *SBOMClient) GenerateSBOM(ctx context.Context, opts SBOMOpts) error {
 		return fmt.Errorf("failed to create SBOM encoder for format %s: %w", format, err)
 	}
 
-	// Encode SBOM to buffer
 	var buf bytes.Buffer
 	if encodeErr := encoder.Encode(&buf, *sbomResult); encodeErr != nil {
 		return fmt.Errorf("failed to encode SBOM: %w", encodeErr)
 	}
 
-	// Write to output file
 	if writeErr := os.WriteFile(opts.OutputPath, buf.Bytes(), 0o600); writeErr != nil {
 		return fmt.Errorf("failed to write SBOM to %s: %w", opts.OutputPath, writeErr)
 	}

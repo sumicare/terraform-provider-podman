@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -68,12 +25,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 )
 
-// version is set via -ldflags during `yarn build` from package.json.
-var (
-	version = "dev"
-)
+var version = "dev"
 
-// main is the entry point for the Podman Terraform provider.
 func main() {
 	var debug bool
 

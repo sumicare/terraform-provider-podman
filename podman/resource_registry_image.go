@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -75,22 +32,17 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// Ensure the implementation satisfies the expected interfaces.
 var (
 	_ resource.Resource                = &RegistryImageResource{}
 	_ resource.ResourceWithConfigure   = &RegistryImageResource{}
 	_ resource.ResourceWithImportState = &RegistryImageResource{}
 )
 
-// NewRegistryImageResource is a helper function to simplify the provider implementation.
-//
 //nolint:ireturn // false positive
 func NewRegistryImageResource() resource.Resource {
 	return &RegistryImageResource{}
 }
 
-// RegistryImageResource is the resource implementation.
-// RegistryImageResourceModel describes the resource data model.
 type (
 	RegistryImageResource struct {
 		config *PodmanProviderConfig
@@ -105,7 +57,6 @@ type (
 		KeepRemotely types.Bool       `tfsdk:"keep_remotely"`
 	}
 
-	// SigningModel describes sigstore/cosign signing configuration.
 	SigningModel struct {
 		CosignKeyPath      types.String `tfsdk:"cosign_key_path"`
 		CosignPassword     types.String `tfsdk:"cosign_password"`
@@ -119,7 +70,6 @@ type (
 		Keyless            types.Bool   `tfsdk:"keyless"`
 	}
 
-	// AuthConfigModel represents authentication configuration for registry operations.
 	AuthConfigModel struct {
 		Address  types.String `tfsdk:"address"`
 		Username types.String `tfsdk:"username"`
@@ -127,7 +77,6 @@ type (
 	}
 )
 
-// Configure adds the provider configured client to the resource.
 func (r *RegistryImageResource) Configure(
 	_ context.Context,
 	req resource.ConfigureRequest,
@@ -149,9 +98,6 @@ func (r *RegistryImageResource) Configure(
 
 	r.config = config
 }
-
-// Create creates the resource and sets the initial Terraform state.
-//
 
 func (r *RegistryImageResource) Create(
 	ctx context.Context,
@@ -198,7 +144,6 @@ func (r *RegistryImageResource) Create(
 		}
 	}
 
-	// Sign the pushed image with cosign if signing is configured
 	if data.Signing != nil {
 		r.signImage(ctx, &data, &resp.Diagnostics)
 
@@ -210,7 +155,6 @@ func (r *RegistryImageResource) Create(
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-// Metadata returns the resource type name.
 func (*RegistryImageResource) Metadata(
 	_ context.Context,
 	req resource.MetadataRequest,
@@ -218,9 +162,6 @@ func (*RegistryImageResource) Metadata(
 ) {
 	resp.TypeName = req.ProviderTypeName + "_registry_image"
 }
-
-// Read refreshes the Terraform state with the latest data.
-//
 
 func (r *RegistryImageResource) Read(
 	ctx context.Context,
@@ -235,7 +176,6 @@ func (r *RegistryImageResource) Read(
 		return
 	}
 
-	// Registry images are remote; we just verify the local image still exists
 	client := NewPodmanClient(r.config)
 
 	exists, err := client.ImageExists(ctx, data.Name.ValueString())
@@ -248,7 +188,6 @@ func (r *RegistryImageResource) Read(
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-// Schema defines the schema for the resource.
 func (*RegistryImageResource) Schema(
 	_ context.Context,
 	_ resource.SchemaRequest,
@@ -363,9 +302,6 @@ func (*RegistryImageResource) Schema(
 	}
 }
 
-// Update updates the resource and sets the updated Terraform state on success.
-//
-
 func (*RegistryImageResource) Update(
 	_ context.Context,
 	_ resource.UpdateRequest,
@@ -376,9 +312,6 @@ func (*RegistryImageResource) Update(
 		"Registry images do not support updates. All changes require replacement.",
 	)
 }
-
-// Delete deletes the resource and removes the Terraform state on success.
-//
 
 func (r *RegistryImageResource) Delete(
 	ctx context.Context,
@@ -394,7 +327,6 @@ func (r *RegistryImageResource) Delete(
 	}
 }
 
-// ImportState imports the resource state.
 func (*RegistryImageResource) ImportState(
 	ctx context.Context,
 	req resource.ImportStateRequest,
@@ -403,7 +335,6 @@ func (*RegistryImageResource) ImportState(
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-// signImage signs the pushed image using cosign and optionally attaches attestations.
 func (r *RegistryImageResource) signImage(
 	ctx context.Context,
 	data *RegistryImageResourceModel,
@@ -412,7 +343,7 @@ func (r *RegistryImageResource) signImage(
 	signing := data.Signing
 	name := data.Name.ValueString()
 
-	// Build the image reference for cosign (use digest if available for immutability)
+	// Prefer digest reference for immutability.
 	imageRef := name
 
 	if !data.Digest.IsNull() && data.Digest.ValueString() != "" {
@@ -452,7 +383,6 @@ func (r *RegistryImageResource) signImage(
 
 	cosignClient := NewCosignClient()
 
-	// Auto-generate a cosign key pair when no key is provided and not using keyless signing.
 	switch {
 	case keyPath == "" && !keyless:
 		result, err := cosignClient.EnsureKeyPair(ctx, ".cosign")
@@ -486,11 +416,9 @@ func (r *RegistryImageResource) signImage(
 		signing.CosignKeyPathOut = types.StringValue(result.PrivateKeyPath)
 		signing.CosignPublicKeyOut = types.StringValue(result.PublicKeyPath)
 	case keyPath != "":
-		// User provided a key — output it so it is visible in state.
 		signing.CosignKeyPathOut = types.StringValue(keyPath)
 		signing.CosignPublicKeyOut = types.StringValue("")
 	default:
-		// Keyless mode — no key files involved.
 		signing.CosignKeyPathOut = types.StringValue("")
 		signing.CosignPublicKeyOut = types.StringValue("")
 	}
@@ -512,7 +440,6 @@ func (r *RegistryImageResource) signImage(
 		return
 	}
 
-	// Attach witness attestation if provided
 	if !signing.AttestationPath.IsNull() && signing.AttestationPath.ValueString() != "" {
 		predicateType := ""
 		if !signing.PredicateType.IsNull() {
@@ -539,7 +466,6 @@ func (r *RegistryImageResource) signImage(
 		}
 	}
 
-	// Attach SBOM if provided
 	if !signing.SBOMPath.IsNull() && signing.SBOMPath.ValueString() != "" {
 		err = cosignClient.AttestImage(ctx, AttestOpts{
 			ImageRef:      imageRef,

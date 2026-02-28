@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -72,6 +29,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/sebdah/goldie/v2"
@@ -83,7 +41,6 @@ var (
 	_ resource.ResourceWithImportState = &RegistryImageResource{}
 )
 
-// signingObjectType returns the tftypes.Object for the "signing" nested attribute.
 func signingObjectType() tftypes.Object {
 	return tftypes.Object{
 		AttributeTypes: map[string]tftypes.Type{
@@ -101,7 +58,6 @@ func signingObjectType() tftypes.Object {
 	}
 }
 
-// authConfigObjectType returns the tftypes.Object for the "auth_config" nested attribute.
 func authConfigObjectType() tftypes.Object {
 	return tftypes.Object{
 		AttributeTypes: map[string]tftypes.Type{
@@ -112,7 +68,6 @@ func authConfigObjectType() tftypes.Object {
 	}
 }
 
-// minimalRegistryImagePlanVals returns tftypes values for a minimal registry image plan.
 func minimalRegistryImagePlanVals(name string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
 		"id":            tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
@@ -124,7 +79,6 @@ func minimalRegistryImagePlanVals(name string) map[string]tftypes.Value {
 	}
 }
 
-// minimalRegistryImageStateVals returns tftypes values for a minimal registry image state.
 func minimalRegistryImageStateVals(name string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
 		"id":            tftypes.NewValue(tftypes.String, name),
@@ -136,7 +90,6 @@ func minimalRegistryImageStateVals(name string) map[string]tftypes.Value {
 	}
 }
 
-// registryImagePlanWithAuth returns plan vals with auth_config set.
 func registryImagePlanWithAuth(name, address, username, password string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
 		"id":            tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
@@ -228,7 +181,18 @@ func TestNewRegistryImageResource(t *testing.T) {
 
 func TestRegistryImageResource_Configure(t *testing.T) {
 	cfg := &PodmanProviderConfig{URI: "unix:///test.sock", BaseURL: "http://d"}
-	testResourceConfigure(t, cfg, func() any { return &RegistryImageResource{} })
+	testResourceConfigure(
+		t,
+		cfg,
+		func() configurableResource { return &RegistryImageResource{} },
+		func(r configurableResource) *PodmanProviderConfig {
+			if rr, ok := r.(*RegistryImageResource); ok {
+				return rr.config
+			}
+
+			return nil
+		},
+	)
 }
 
 func TestRegistryImageResource_Update(t *testing.T) {
@@ -701,46 +665,19 @@ func TestRegistryImageResource_Create(t *testing.T) {
 		},
 	}
 
-	// Convert tests to the expected format for shared helper
-	sharedTests := make([]struct {
-		handler    http.HandlerFunc
-		planVals   func() map[string]tftypes.Value
-		checkState func(*testing.T, any)
-		name       string
-		wantErr    bool
-	}, len(tests))
-
-	for i, tt := range tests {
-		sharedTests[i] = struct {
-			handler    http.HandlerFunc
-			planVals   func() map[string]tftypes.Value
-			checkState func(*testing.T, any)
-			name       string
-			wantErr    bool
-		}{
-			name:     tt.name,
-			handler:  tt.handler,
-			planVals: tt.planVals,
-			wantErr:  tt.wantErr,
-		}
-		if tt.checkState != nil {
-			sharedTests[i].checkState = func(t *testing.T, data any) {
-				t.Helper()
-
-				if regData, ok := data.(RegistryImageResourceModel); ok {
-					tt.checkState(t, regData)
-				}
-			}
-		}
-	}
-
-	testResourceCreate(t, sharedTests,
-		makeRegistryImagePlan,
-		makeRegistryImageState,
-		func(cfg *PodmanProviderConfig) any {
+	testResourceCreate(t, tests,
+		func(t *testing.T, vals map[string]tftypes.Value) tfsdk.Plan {
+			t.Helper()
+			return makePlan(t, &RegistryImageResource{}, vals)
+		},
+		func(t *testing.T, vals map[string]tftypes.Value) tfsdk.State {
+			t.Helper()
+			return makeState(t, &RegistryImageResource{}, vals)
+		},
+		func(cfg *PodmanProviderConfig) resource.Resource {
 			return &RegistryImageResource{config: cfg}
 		},
-		func(resp *resource.CreateResponse) any {
+		func(resp *resource.CreateResponse) RegistryImageResourceModel {
 			var data RegistryImageResourceModel
 			resp.State.Get(context.Background(), &data)
 
@@ -780,7 +717,7 @@ func TestRegistryImageResource_Read_CRUD(t *testing.T) {
 				BaseURL:    server.URL,
 			}}
 
-			state := makeRegistryImageState(t, minimalRegistryImageStateVals(tt.name_))
+			state := makeState(t, &RegistryImageResource{}, minimalRegistryImageStateVals(tt.name_))
 			readResp := &resource.ReadResponse{State: state}
 			r.Read(t.Context(), resource.ReadRequest{State: state}, readResp)
 
@@ -801,8 +738,9 @@ func TestRegistryImageResource_Read_CRUD(t *testing.T) {
 
 func TestRegistryImageResource_Delete_CRUD(t *testing.T) {
 	r := &RegistryImageResource{}
-	state := makeRegistryImageState(
+	state := makeState(
 		t,
+		&RegistryImageResource{},
 		minimalRegistryImageStateVals("registry.example.com/test:v1"),
 	)
 	deleteResp := &resource.DeleteResponse{State: state}
@@ -830,8 +768,9 @@ func TestRegistryImageResource_Delete_NoOp(t *testing.T) {
 
 func TestRegistryImageResource_ImportState(t *testing.T) {
 	r := &RegistryImageResource{}
-	state := makeRegistryImageState(
+	state := makeState(
 		t,
+		&RegistryImageResource{},
 		minimalRegistryImageStateVals("registry.example.com/test:v1"),
 	)
 

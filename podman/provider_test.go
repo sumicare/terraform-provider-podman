@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -130,7 +87,6 @@ func TestProviderResources(t *testing.T) {
 		t.Fatalf("expected 2 resources, got %d", len(resources))
 	}
 
-	// Verify each factory returns a non-nil resource
 	for i, factory := range resources {
 		r := factory()
 		if r == nil {
@@ -170,10 +126,7 @@ func TestProviderResources_Types(t *testing.T) {
 	}
 }
 
-// Verify compile-time interface conformance.
-var (
-	_ provider.Provider = &PodmanProvider{}
-)
+var _ provider.Provider = &PodmanProvider{}
 
 func TestPodmanProviderConfig(t *testing.T) {
 	cfg := &PodmanProviderConfig{
@@ -190,14 +143,12 @@ func TestPodmanProviderConfig(t *testing.T) {
 	}
 }
 
-// Ensure datasource and resource interfaces are satisfied by checking function signatures.
 var (
 	_ func() datasource.DataSource = nil
 	_ func() resource.Resource     = NewImageResource
 	_ func() resource.Resource     = NewRegistryImageResource
 )
 
-// providerSchemaResp returns the provider schema.
 func providerSchemaResp(t *testing.T) provider.SchemaResponse {
 	t.Helper()
 
@@ -208,7 +159,6 @@ func providerSchemaResp(t *testing.T) provider.SchemaResponse {
 	return *resp
 }
 
-// makeProviderConfig creates a tfsdk.Config for the provider with the given URI.
 func makeProviderConfig(t *testing.T, uri *string) tfsdk.Config {
 	t.Helper()
 

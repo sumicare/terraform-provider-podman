@@ -1,47 +1,4 @@
 /*
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
    Copyright 2026 Sumicare
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -77,33 +34,27 @@ import (
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
-// Ensure the implementation satisfies the expected interfaces.
 var (
 	_ resource.Resource                = &ImageResource{}
 	_ resource.ResourceWithConfigure   = &ImageResource{}
 	_ resource.ResourceWithImportState = &ImageResource{}
 )
 
-// NewImageResource is a helper function to simplify the provider implementation.
-//
 //nolint:ireturn // false positive
 func NewImageResource() resource.Resource {
 	return &ImageResource{}
 }
 
-// ImageResource is the resource implementation.
 type ImageResource struct {
 	config *PodmanProviderConfig
 }
 
-// ImageBuildModel describes the build configuration.
 type ImageBuildModel struct {
 	Context   types.String `tfsdk:"context"`
 	BuildArgs types.Map    `tfsdk:"build_args"`
 	Pull      types.Bool   `tfsdk:"pull"`
 }
 
-// AttestationModel describes witness attestation configuration.
 type AttestationModel struct {
 	Attestors          types.List   `tfsdk:"attestors"`
 	StepName           types.String `tfsdk:"step_name"`
@@ -116,13 +67,11 @@ type AttestationModel struct {
 	EnableArchivista   types.Bool   `tfsdk:"enable_archivista"`
 }
 
-// SBOMModel describes SBOM generation configuration.
 type SBOMModel struct {
 	OutputPath types.String `tfsdk:"output_path"`
 	Format     types.String `tfsdk:"format"`
 }
 
-// ImageResourceModel describes the resource data model.
 type ImageResourceModel struct {
 	Build       *ImageBuildModel  `tfsdk:"build"`
 	Attestation *AttestationModel `tfsdk:"attestation"`
@@ -134,7 +83,6 @@ type ImageResourceModel struct {
 	KeepLocally types.Bool        `tfsdk:"keep_locally"`
 }
 
-// extractBuildArgs converts a types.Map of build args into a plain Go map.
 func extractBuildArgs(m types.Map) map[string]string {
 	if m.IsNull() || m.IsUnknown() {
 		return nil
@@ -209,7 +157,6 @@ func (m contextHashPlanModifier) PlanModifyString(
 	resp.PlanValue = types.StringValue(hash)
 }
 
-// Configure adds the provider configured client to the resource.
 func (r *ImageResource) Configure(
 	_ context.Context,
 	req resource.ConfigureRequest,
@@ -231,9 +178,6 @@ func (r *ImageResource) Configure(
 
 	r.config = config
 }
-
-// Create creates the resource and sets the initial Terraform state.
-//
 
 func (r *ImageResource) Create(
 	ctx context.Context,
@@ -261,7 +205,6 @@ func (r *ImageResource) Create(
 		return
 	}
 
-	// Compute build context hash for change detection on subsequent plans.
 	hash, err := BuildContextHash(
 		ctx,
 		data.Build.Context.ValueString(),
@@ -321,7 +264,6 @@ func (r *ImageResource) Create(
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-// Metadata returns the resource type name.
 func (*ImageResource) Metadata(
 	_ context.Context,
 	req resource.MetadataRequest,
@@ -329,9 +271,6 @@ func (*ImageResource) Metadata(
 ) {
 	resp.TypeName = req.ProviderTypeName + "_image"
 }
-
-// Read refreshes the Terraform state with the latest data.
-//
 
 func (r *ImageResource) Read(
 	ctx context.Context,
@@ -346,9 +285,7 @@ func (r *ImageResource) Read(
 		return
 	}
 
-	// Check if the image still exists in podman. If it was pruned or
-	// removed outside of Terraform, remove it from state so that a
-	// subsequent apply will recreate it instead of erroring.
+	// If the image was removed outside Terraform, drop it from state.
 	name := data.Name.ValueString()
 	client := NewPodmanClient(r.config)
 
@@ -372,7 +309,6 @@ func (r *ImageResource) Read(
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-// Schema defines the schema for the resource.
 func (*ImageResource) Schema(
 	_ context.Context,
 	_ resource.SchemaRequest,
@@ -535,9 +471,6 @@ func (*ImageResource) Schema(
 	}
 }
 
-// Update is not supported - all changes require replacement.
-//
-
 func (*ImageResource) Update(
 	_ context.Context,
 	_ resource.UpdateRequest,
@@ -549,9 +482,6 @@ func (*ImageResource) Update(
 			"All changes require replacement. This should be handled automatically by Terraform.",
 	)
 }
-
-// Delete deletes the resource and removes the Terraform state on success.
-//
 
 func (r *ImageResource) Delete(
 	ctx context.Context,
@@ -586,7 +516,6 @@ func (r *ImageResource) Delete(
 	}
 }
 
-// ImportState imports the resource state.
 func (*ImageResource) ImportState(
 	ctx context.Context,
 	req resource.ImportStateRequest,
@@ -595,7 +524,6 @@ func (*ImageResource) ImportState(
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }
 
-// toBuildOpts converts the Terraform model into ImageBuildOpts for the PodmanClient.
 func (r *ImageResource) toBuildOpts(
 	ctx context.Context,
 	data *ImageResourceModel,
@@ -628,7 +556,6 @@ func (r *ImageResource) toBuildOpts(
 	return opts, nil
 }
 
-// buildImage builds an image from a Containerfile, optionally wrapped with witness attestation.
 func (r *ImageResource) buildImage(
 	ctx context.Context,
 	data *ImageResourceModel,
@@ -645,7 +572,6 @@ func (r *ImageResource) buildImage(
 
 	client := NewPodmanClient(r.config)
 
-	// When attestation is configured, wrap the build with witness attestation
 	if data.Attestation != nil {
 		return r.buildWithAttestation(ctx, data, client, opts, diags)
 	}
@@ -653,7 +579,6 @@ func (r *ImageResource) buildImage(
 	tflog.Warn(ctx, "No attestation block configured; building without witness attestation. "+
 		"Set the attestation block with a signer_key_path to enable supply chain provenance signing.")
 
-	// Standard build without attestation
 	if buildErr := client.BuildImage(ctx, opts); buildErr != nil {
 		diags.AddError(
 			"Error building image",
@@ -666,9 +591,7 @@ func (r *ImageResource) buildImage(
 	return nil
 }
 
-// ... (rest of the code remains the same)
-// buildWithAttestation wraps the image build with go-witness attestation to produce
-// a signed DSSE attestation envelope containing supply chain metadata.
+// buildWithAttestation wraps the build with go-witness to produce a signed DSSE envelope.
 func (r *ImageResource) buildWithAttestation(
 	ctx context.Context,
 	data *ImageResourceModel,
@@ -692,7 +615,6 @@ func (r *ImageResource) buildWithAttestation(
 		archivistaServer = att.ArchivistaServer.ValueString()
 	}
 
-	// Resolve the signer key: use the provided path or auto-generate a new key pair.
 	var signerKeyPath string
 	if !att.SignerKeyPath.IsNull() && att.SignerKeyPath.ValueString() != "" {
 		signerKeyPath = att.SignerKeyPath.ValueString()
@@ -759,7 +681,6 @@ func (r *ImageResource) buildWithAttestation(
 	return nil
 }
 
-// generateSBOM uses syft to produce a CycloneDX/SPDX SBOM for the built image.
 func (r *ImageResource) generateSBOM(
 	ctx context.Context,
 	data *ImageResourceModel,
@@ -783,7 +704,6 @@ func (r *ImageResource) generateSBOM(
 	}
 }
 
-// readImageState reads the current state of an image.
 func (r *ImageResource) readImageState(
 	ctx context.Context,
 	data *ImageResourceModel,
