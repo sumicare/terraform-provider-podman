@@ -19,6 +19,8 @@ package podman
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,5 +136,77 @@ func TestAttestBuild_MissingKey(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "failed to open signer key") {
 		t.Errorf("expected 'failed to open signer key' in error, got: %s", err.Error())
+	}
+}
+
+func TestRestoreAttestation_MissingKey(t *testing.T) {
+	client := NewWitnessClient()
+
+	err := client.RestoreAttestation(t.Context(), WitnessRunOpts{
+		StepName:      "restore",
+		SignerKeyPath: "/nonexistent/key.pem",
+		OutputPath:    "/tmp/test-restore-attestation.json",
+	})
+	if err == nil {
+		t.Error("expected error for missing signer key")
+	}
+
+	if !strings.Contains(err.Error(), "failed to open signer key") {
+		t.Errorf("expected 'failed to open signer key' in error, got: %s", err.Error())
+	}
+}
+
+func TestRestoreAttestation_ProducesEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	cosignDir := filepath.Join(dir, ".cosign")
+	sbomDir := filepath.Join(dir, ".sbom")
+
+	if err := os.MkdirAll(sbomDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a minimal CycloneDX SBOM so the product/sbom attestors have something.
+	sbomContent := `{"bomFormat":"CycloneDX","specVersion":"1.5","components":[]}`
+	if err := os.WriteFile(filepath.Join(sbomDir, "test.cyclonedx.json"), []byte(sbomContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate a real key pair.
+	cosignClient := NewCosignClient()
+	result, err := cosignClient.EnsureKeyPair(t.Context(), cosignDir)
+	if err != nil {
+		t.Fatalf("EnsureKeyPair failed: %v", err)
+	}
+
+	attestPath := filepath.Join(sbomDir, "test.intoto.json")
+	witness := NewWitnessClient()
+
+	err = witness.RestoreAttestation(t.Context(), WitnessRunOpts{
+		StepName:      "restore",
+		SignerKeyPath: result.PrivateKeyPath,
+		Passphrase:    result.Passphrase,
+		OutputPath:    attestPath,
+		WorkingDir:    sbomDir,
+	})
+	if err != nil {
+		t.Fatalf("RestoreAttestation failed: %v", err)
+	}
+
+	// Verify the output file exists and contains a DSSE envelope.
+	data, err := os.ReadFile(attestPath)
+	if err != nil {
+		t.Fatalf("failed to read attestation: %v", err)
+	}
+
+	if len(data) == 0 {
+		t.Fatal("attestation file is empty")
+	}
+
+	if !strings.Contains(string(data), "payload") {
+		t.Error("attestation should contain a DSSE envelope with 'payload' field")
+	}
+
+	if !strings.Contains(string(data), "signatures") {
+		t.Error("attestation should contain a DSSE envelope with 'signatures' field")
 	}
 }

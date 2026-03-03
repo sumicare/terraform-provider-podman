@@ -297,6 +297,9 @@ func (r *ImageResource) Read(
 	// Backfill SBOM if the file is missing on disk.
 	r.ensureSBOM(ctx, &data, &resp.Diagnostics)
 
+	// Backfill attestation if the file is missing on disk.
+	r.ensureAttestation(ctx, &data, &resp.Diagnostics)
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -619,6 +622,74 @@ func (r *ImageResource) ensureSBOM(
 			diags.AddWarning(d.Summary(), d.Detail()+
 				" Install syft to enable automatic SBOM generation.")
 		}
+	}
+}
+
+// ensureAttestation backfills the in-toto witness attestation when the file
+// is missing on disk. The restored attestation uses step name "restore" so
+// verifiers can distinguish it from original build attestations.
+func (r *ImageResource) ensureAttestation(
+	ctx context.Context,
+	data *ImageResourceModel,
+	diags *diag.Diagnostics,
+) {
+	baseName := imageBaseName(data.Name.ValueString())
+	attestPath := filepath.Join(".sbom", baseName+".intoto.json")
+
+	// Always ensure attestation_path is populated in state.
+	if data.AttestationPath.IsNull() || data.AttestationPath.ValueString() == "" {
+		data.AttestationPath = types.StringValue(attestPath)
+	} else {
+		attestPath = data.AttestationPath.ValueString()
+	}
+
+	// If the file already exists, nothing to do.
+	if _, err := os.Stat(attestPath); err == nil {
+		return
+	}
+
+	tflog.Info(ctx, "Attestation file missing, restoring", map[string]any{
+		"image": data.Name.ValueString(),
+		"path":  attestPath,
+	})
+
+	cosignClient := NewCosignClient()
+
+	result, err := cosignClient.EnsureKeyPair(ctx, ".cosign")
+	if err != nil {
+		tflog.Warn(ctx, "Attestation restore skipped: could not ensure key pair",
+			map[string]any{"error": err.Error()})
+		diags.AddWarning(
+			"Attestation restore skipped",
+			"Could not ensure cosign key pair for attestation restore: "+err.Error(),
+		)
+
+		return
+	}
+
+	data.CosignPublicKey = types.StringValue(string(result.PublicKeyPEM))
+
+	witness := NewWitnessClient()
+
+	// Use the .sbom directory as working dir so the product attestor
+	// picks up the CycloneDX SBOM file.
+	workingDir := filepath.Dir(attestPath)
+
+	restoreErr := witness.RestoreAttestation(ctx, WitnessRunOpts{
+		StepName:      "restore",
+		SignerKeyPath: result.PrivateKeyPath,
+		Passphrase:    result.Passphrase,
+		OutputPath:    attestPath,
+		WorkingDir:    workingDir,
+	})
+	if restoreErr != nil {
+		tflog.Warn(ctx, "Attestation restore failed (non-fatal)",
+			map[string]any{"error": restoreErr.Error()})
+		diags.AddWarning(
+			"Attestation restore failed",
+			fmt.Sprintf("Could not restore attestation for %s: %s",
+				data.Name.ValueString(), restoreErr.Error()),
+		)
 	}
 }
 

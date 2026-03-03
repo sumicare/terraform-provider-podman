@@ -193,6 +193,132 @@ func (c *WitnessClient) AttestBuild(
 	return nil
 }
 
+// RestoreAttestation creates a signed in-toto witness attestation for an
+// existing image whose attestation file was deleted. Unlike AttestBuild it
+// does NOT execute a build — it only collects environment, git, product
+// (to pick up the SBOM file), and sbom attestors. The step name is set to
+// "restore" so verifiers can distinguish restored attestations from original
+// build attestations.
+func (c *WitnessClient) RestoreAttestation(
+	ctx context.Context,
+	opts WitnessRunOpts,
+) error {
+	tflog.Info(ctx, "Restoring witness attestation for existing image", map[string]any{
+		"step_name":   opts.StepName,
+		"output_path": opts.OutputPath,
+		"working_dir": opts.WorkingDir,
+	})
+
+	keyFile, err := os.Open(opts.SignerKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to open signer key %s: %w", opts.SignerKeyPath, err)
+	}
+	defer keyFile.Close()
+
+	parsedKey, err := witnessCrypto.TryParseKeyFromReaderWithPassword(keyFile, []byte(opts.Passphrase))
+	if err != nil {
+		return fmt.Errorf("failed to load signer key: %w", err)
+	}
+
+	signer, err := witnessCrypto.NewSigner(parsedKey)
+	if err != nil {
+		return fmt.Errorf("failed to create signer from key: %w", err)
+	}
+
+	// No material or build execution — the image already exists.
+	// The product attestor captures file digests (including the SBOM).
+	// We omit the sbom attestor here because it requires product attestor
+	// dependency wiring that may not resolve without a build execution phase.
+	attestors := []attestation.Attestor{
+		environment.New(),
+		git.New(),
+		product.New(),
+	}
+
+	attCtx, err := attestation.NewContext(
+		opts.StepName,
+		attestors,
+		attestation.WithWorkingDir(opts.WorkingDir),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create attestation context: %w", err)
+	}
+
+	if attestErr := attCtx.RunAttestors(); attestErr != nil {
+		tflog.Warn(ctx, "Restore attestor collection warning",
+			map[string]any{"error": attestErr.Error()})
+	}
+
+	var successful []attestation.CompletedAttestor
+	for _, ca := range attCtx.CompletedAttestors() {
+		if ca.Error != nil {
+			tflog.Warn(ctx, "Restore attestor failed (excluded from collection)",
+				map[string]any{"attestor": ca.Attestor.Name(), "error": ca.Error.Error()})
+			continue
+		}
+		successful = append(successful, ca)
+	}
+
+	collection := attestation.NewCollection(opts.StepName, successful)
+
+	predicate, err := json.Marshal(collection)
+	if err != nil {
+		return fmt.Errorf("failed to marshal attestation collection: %w", err)
+	}
+
+	statement, err := intoto.NewStatement(
+		attestation.CollectionType,
+		predicate,
+		collection.Subjects(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create in-toto statement: %w", err)
+	}
+
+	statementBytes, err := json.Marshal(statement)
+	if err != nil {
+		return fmt.Errorf("failed to marshal in-toto statement: %w", err)
+	}
+
+	envelope, err := dsse.Sign(
+		intoto.PayloadType,
+		bytes.NewReader(statementBytes),
+		dsse.SignWithSigners(signer),
+		dsse.SignWithTimestampers(&simpleTimestamper{}),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to sign attestation envelope: %w", err)
+	}
+
+	if dir := filepath.Dir(opts.OutputPath); dir != "" {
+		mkdirErr := os.MkdirAll(dir, 0o755)
+		if mkdirErr != nil {
+			return fmt.Errorf("failed to create attestation output directory %s: %w", dir, mkdirErr)
+		}
+	}
+
+	envelopeBytes, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("failed to marshal attestation envelope: %w", err)
+	}
+
+	if writeErr := os.WriteFile( //nolint:gosec // OutputPath is user-provided destination for attestation output
+		opts.OutputPath,
+		envelopeBytes,
+		0o600,
+	); writeErr != nil {
+		return fmt.Errorf("failed to write attestation to %s: %w", opts.OutputPath, writeErr)
+	}
+
+	tflog.Info(ctx, "Witness attestation restored", map[string]any{
+		"output_path":    opts.OutputPath,
+		"attestor_count": len(successful),
+		"subject_count":  len(collection.Subjects()),
+	})
+
+	return nil
+}
+
 type simpleTimestamper struct{}
 
 func (simpleTimestamper) Timestamp(_ context.Context, _ io.Reader) ([]byte, error) {
