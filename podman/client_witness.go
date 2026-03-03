@@ -22,20 +22,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/in-toto/go-witness/attestation"
-	"github.com/in-toto/go-witness/attestation/commandrun"
+	"github.com/in-toto/go-witness/attestation/environment"
+	"github.com/in-toto/go-witness/attestation/git"
 	"github.com/in-toto/go-witness/attestation/material"
 	"github.com/in-toto/go-witness/attestation/product"
+	"github.com/in-toto/go-witness/attestation/sbom"
 	witnessCrypto "github.com/in-toto/go-witness/cryptoutil"
 	"github.com/in-toto/go-witness/dsse"
 	"github.com/in-toto/go-witness/intoto"
 	"github.com/in-toto/go-witness/timestamp"
+	"github.com/invopop/jsonschema"
 )
 
 type WitnessClient struct{}
@@ -47,6 +49,7 @@ func NewWitnessClient() *WitnessClient {
 type WitnessRunOpts struct {
 	StepName         string
 	SignerKeyPath    string
+	Passphrase       string
 	OutputPath       string
 	ArchivistaServer string
 	WorkingDir       string
@@ -56,6 +59,13 @@ type WitnessRunOpts struct {
 }
 
 // AttestBuild wraps buildFn with in-toto witness attestation.
+// The attestation collects:
+//   - environment: OS, hostname, user (build environment provenance)
+//   - git: commit hash, branch, remotes (source provenance)
+//   - material: file digests in build context before the build
+//   - buildrun: the actual podman image build (execute phase)
+//   - product: file digests after the build (captures SBOM output)
+//   - sbom: parses any CycloneDX/SPDX products into the attestation
 func (c *WitnessClient) AttestBuild(
 	ctx context.Context,
 	opts WitnessRunOpts,
@@ -64,6 +74,7 @@ func (c *WitnessClient) AttestBuild(
 	tflog.Info(ctx, "Creating witness attestation for build", map[string]any{
 		"step_name":   opts.StepName,
 		"output_path": opts.OutputPath,
+		"working_dir": opts.WorkingDir,
 	})
 
 	keyFile, err := os.Open(opts.SignerKeyPath)
@@ -72,48 +83,68 @@ func (c *WitnessClient) AttestBuild(
 	}
 	defer keyFile.Close()
 
-	signer, err := witnessCrypto.NewSignerFromReader(keyFile)
+	parsedKey, err := witnessCrypto.TryParseKeyFromReaderWithPassword(keyFile, []byte(opts.Passphrase))
 	if err != nil {
 		return fmt.Errorf("failed to load signer key: %w", err)
 	}
 
-	attestors := []attestation.Attestor{
-		material.New(),
-		product.New(),
-		commandrun.New(
-			commandrun.WithCommand([]string{"podman-provider", "build"}),
-		),
+	signer, err := witnessCrypto.NewSigner(parsedKey)
+	if err != nil {
+		return fmt.Errorf("failed to create signer from key: %w", err)
 	}
 
-	attCtx, err := attestation.NewContext(opts.StepName, attestors)
+	attestors := []attestation.Attestor{
+		environment.New(),
+		git.New(),
+		material.New(),
+		&buildRunAttestor{fn: buildFn},
+		product.New(),
+		sbom.NewSBOMAttestor(),
+	}
+
+	attCtx, err := attestation.NewContext(
+		opts.StepName,
+		attestors,
+		attestation.WithWorkingDir(opts.WorkingDir),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create attestation context: %w", err)
 	}
 
 	if attestErr := attCtx.RunAttestors(); attestErr != nil {
-		tflog.Warn(
-			ctx,
-			"Pre-attestation collection warning",
-			map[string]any{"error": attestErr.Error()},
-		)
+		tflog.Warn(ctx, "Attestor collection warning",
+			map[string]any{"error": attestErr.Error()})
 	}
 
-	if buildErr := buildFn(); buildErr != nil {
-		return fmt.Errorf("build failed during attestation: %w", buildErr)
+	// Filter out errored attestors for the collection. Execute-phase
+	// failures (e.g. the build itself) are fatal — we must not produce
+	// an attestation for a failed build.
+	var successful []attestation.CompletedAttestor
+	for _, ca := range attCtx.CompletedAttestors() {
+		if ca.Error != nil {
+			if ca.Attestor.RunType() == attestation.ExecuteRunType {
+				return fmt.Errorf("build attestor %q failed: %w", ca.Attestor.Name(), ca.Error)
+			}
+
+			tflog.Warn(ctx, "Attestor failed (excluded from collection)",
+				map[string]any{"attestor": ca.Attestor.Name(), "error": ca.Error.Error()})
+			continue
+		}
+		successful = append(successful, ca)
 	}
 
-	completed := attCtx.CompletedAttestors()
-	subjects := collectSubjects(completed)
+	collection := attestation.NewCollection(opts.StepName, successful)
 
-	predicate, err := json.Marshal(map[string]any{
-		"buildType": "podman-provider",
-		"builder":   map[string]string{"id": "sumicare-provider-podman"},
-	})
+	predicate, err := json.Marshal(collection)
 	if err != nil {
-		return fmt.Errorf("failed to marshal predicate: %w", err)
+		return fmt.Errorf("failed to marshal attestation collection: %w", err)
 	}
 
-	statement, err := intoto.NewStatement(intoto.PayloadType, predicate, subjects)
+	statement, err := intoto.NewStatement(
+		attestation.CollectionType,
+		predicate,
+		collection.Subjects(),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create in-toto statement: %w", err)
 	}
@@ -154,7 +185,9 @@ func (c *WitnessClient) AttestBuild(
 	}
 
 	tflog.Info(ctx, "Witness attestation created", map[string]any{
-		"output_path": opts.OutputPath,
+		"output_path":    opts.OutputPath,
+		"attestor_count": len(successful),
+		"subject_count":  len(collection.Subjects()),
 	})
 
 	return nil
@@ -168,16 +201,30 @@ func (simpleTimestamper) Timestamp(_ context.Context, _ io.Reader) ([]byte, erro
 
 var _ timestamp.Timestamper = (*simpleTimestamper)(nil)
 
-func collectSubjects(
-	completedAttestors []attestation.CompletedAttestor,
-) map[string]witnessCrypto.DigestSet {
-	subjects := make(map[string]witnessCrypto.DigestSet)
+// buildRunAttestor is a custom Execute-phase attestor that wraps a Go
+// function instead of shelling out to a CLI command. This lets the
+// attestation context run material → build → product in the correct order.
+type buildRunAttestor struct {
+	fn       func() error
+	ExitCode int `json:"exitcode"`
+}
 
-	for _, a := range completedAttestors {
-		if subjecter, ok := a.Attestor.(attestation.Subjecter); ok {
-			maps.Copy(subjects, subjecter.Subjects())
-		}
+const (
+	buildRunName = "buildrun"
+	buildRunType = "https://witness.dev/attestations/buildrun/v0.1"
+)
+
+func (b *buildRunAttestor) Name() string                 { return buildRunName }
+func (b *buildRunAttestor) Type() string                 { return buildRunType }
+func (b *buildRunAttestor) RunType() attestation.RunType { return attestation.ExecuteRunType }
+func (b *buildRunAttestor) Schema() *jsonschema.Schema   { return jsonschema.Reflect(b) }
+func (b *buildRunAttestor) Attest(_ *attestation.AttestationContext) error {
+	if b.fn == nil {
+		return nil
 	}
-
-	return subjects
+	if err := b.fn(); err != nil {
+		b.ExitCode = 1
+		return fmt.Errorf("build failed during attestation: %w", err)
+	}
+	return nil
 }

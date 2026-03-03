@@ -55,40 +55,16 @@ func buildObjectType() tftypes.Object {
 	}
 }
 
-func attestationObjectType() tftypes.Object {
-	return tftypes.Object{
-		AttributeTypes: map[string]tftypes.Type{
-			"step_name":             tftypes.String,
-			"signer_key_path":       tftypes.String,
-			"output_path":           tftypes.String,
-			"attestors":             tftypes.List{ElementType: tftypes.String},
-			"export_slsa":           tftypes.Bool,
-			"enable_archivista":     tftypes.Bool,
-			"archivista_server":     tftypes.String,
-			"signer_key_path_out":   tftypes.String,
-			"signer_public_key_out": tftypes.String,
-		},
-	}
-}
-
-func sbomObjectType() tftypes.Object {
-	return tftypes.Object{
-		AttributeTypes: map[string]tftypes.Type{
-			"output_path": tftypes.String,
-			"format":      tftypes.String,
-		},
-	}
-}
-
 func minimalImagePlanVals(name, contextDir string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
-		"id":           tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"name":         tftypes.NewValue(tftypes.String, name),
-		"repo_digest":  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"keep_locally": tftypes.NewValue(tftypes.Bool, false),
-		"context_hash": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"attestation":  tftypes.NewValue(attestationObjectType(), nil),
-		"sbom":         tftypes.NewValue(sbomObjectType(), nil),
+		"id":                tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"name":              tftypes.NewValue(tftypes.String, name),
+		"repo_digest":       tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"keep_locally":      tftypes.NewValue(tftypes.Bool, false),
+		"context_hash":      tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"sbom_path":         tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"attestation_path":  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"cosign_public_key": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
 		"build": tftypes.NewValue(buildObjectType(), map[string]tftypes.Value{
 			"context":    tftypes.NewValue(tftypes.String, contextDir),
 			"build_args": tftypes.NewValue(tftypes.Map{ElementType: tftypes.String}, nil),
@@ -99,13 +75,14 @@ func minimalImagePlanVals(name, contextDir string) map[string]tftypes.Value {
 
 func minimalImageStateVals(name string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
-		"id":           tftypes.NewValue(tftypes.String, "sha256:abc123def"),
-		"name":         tftypes.NewValue(tftypes.String, name),
-		"repo_digest":  tftypes.NewValue(tftypes.String, "localhost/test@sha256:abc123def"),
-		"keep_locally": tftypes.NewValue(tftypes.Bool, false),
-		"context_hash": tftypes.NewValue(tftypes.String, "somehash"),
-		"attestation":  tftypes.NewValue(attestationObjectType(), nil),
-		"sbom":         tftypes.NewValue(sbomObjectType(), nil),
+		"id":                tftypes.NewValue(tftypes.String, "sha256:abc123def"),
+		"name":              tftypes.NewValue(tftypes.String, name),
+		"repo_digest":       tftypes.NewValue(tftypes.String, "localhost/test@sha256:abc123def"),
+		"keep_locally":      tftypes.NewValue(tftypes.Bool, false),
+		"context_hash":      tftypes.NewValue(tftypes.String, "somehash"),
+		"sbom_path":         tftypes.NewValue(tftypes.String, ""),
+		"attestation_path":  tftypes.NewValue(tftypes.String, ""),
+		"cosign_public_key": tftypes.NewValue(tftypes.String, ""),
 		"build": tftypes.NewValue(buildObjectType(), map[string]tftypes.Value{
 			"context":    tftypes.NewValue(tftypes.String, "."),
 			"build_args": tftypes.NewValue(tftypes.Map{ElementType: tftypes.String}, nil),
@@ -138,13 +115,13 @@ func TestImageResource_Schema(t *testing.T) {
 		}
 	}
 
-	for _, attr := range []string{"keep_locally", "sbom", "attestation"} {
+	for _, attr := range []string{"keep_locally"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("missing optional attribute %q", attr)
 		}
 	}
 
-	for _, attr := range []string{"id", "context_hash"} {
+	for _, attr := range []string{"id", "context_hash", "sbom_path", "attestation_path", "cosign_public_key"} {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("missing computed attribute %q", attr)
 		}
@@ -155,29 +132,6 @@ func TestImageResource_Schema(t *testing.T) {
 			for _, sub := range []string{"context", "build_args", "pull"} {
 				if _, exists := nested.Attributes[sub]; !exists {
 					t.Errorf("missing build sub-attribute %q", sub)
-				}
-			}
-		}
-	})
-
-	t.Run("attestation_sub_attributes", func(t *testing.T) {
-		if nested, ok := resp.Schema.Attributes["attestation"].(schema.SingleNestedAttribute); ok {
-			for _, sub := range []string{
-				"step_name", "signer_key_path", "output_path",
-				"attestors", "export_slsa", "enable_archivista", "archivista_server",
-			} {
-				if _, exists := nested.Attributes[sub]; !exists {
-					t.Errorf("missing attestation sub-attribute %q", sub)
-				}
-			}
-		}
-	})
-
-	t.Run("sbom_sub_attributes", func(t *testing.T) {
-		if nested, ok := resp.Schema.Attributes["sbom"].(schema.SingleNestedAttribute); ok {
-			for _, sub := range []string{"output_path", "format"} {
-				if _, exists := nested.Attributes[sub]; !exists {
-					t.Errorf("missing sbom sub-attribute %q", sub)
 				}
 			}
 		}
@@ -489,6 +443,8 @@ func TestImageResource_ReadImageState_Error(t *testing.T) {
 }
 
 func TestImageResource_BuildImage(t *testing.T) {
+	t.Cleanup(func() { os.RemoveAll(".cosign"); os.RemoveAll(".sbom") })
+
 	cfg := newTestConfig(t, mockPodmanHandler(t))
 	r := &ImageResource{config: cfg}
 
@@ -553,11 +509,8 @@ func TestImageResource_GenerateSBOM(t *testing.T) {
 	r := &ImageResource{}
 
 	data := &ImageResourceModel{
-		Name: types.StringValue("localhost/test:v1"),
-		SBOM: &SBOMModel{
-			OutputPath: types.StringValue("/tmp/nonexistent-sbom-path.json"),
-			Format:     types.StringValue("cyclonedx"),
-		},
+		Name:     types.StringValue("localhost/test:v1"),
+		SBOMPath: types.StringValue("/tmp/nonexistent-sbom-path.json"),
 	}
 
 	var diags diag.Diagnostics
@@ -568,259 +521,29 @@ func TestImageResource_GenerateSBOM(t *testing.T) {
 	}
 }
 
-func TestImageResource_Schema_SBOMDefaults(t *testing.T) {
+func TestImageResource_Schema_ComputedOutputs(t *testing.T) {
 	r := &ImageResource{}
 	resp := &resource.SchemaResponse{}
 	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
 
-	if sbomAttr, ok := resp.Schema.Attributes["sbom"].(schema.SingleNestedAttribute); ok {
-		if !sbomAttr.IsComputed() {
-			t.Error("expected sbom attribute to be computed (provenance by default)")
+	for _, attr := range []string{"sbom_path", "attestation_path", "cosign_public_key"} {
+		a, ok := resp.Schema.Attributes[attr].(schema.StringAttribute)
+		if !ok {
+			t.Errorf("expected %q to be a StringAttribute", attr)
+
+			continue
 		}
 
-		if outputPath, isOutputPath := sbomAttr.Attributes["output_path"].(schema.StringAttribute); isOutputPath {
-			if !outputPath.IsComputed() || !outputPath.IsOptional() {
-				t.Error("expected output_path to be optional+computed")
-			}
-		}
-
-		if format, isFormat := sbomAttr.Attributes["format"].(schema.StringAttribute); isFormat {
-			if !format.IsComputed() || !format.IsOptional() {
-				t.Error("expected format to be optional+computed")
-			}
+		if !a.IsComputed() {
+			t.Errorf("expected %q to be computed", attr)
 		}
 	}
-}
-
-func TestImageResource_Schema_AttestationDefaults(t *testing.T) {
-	r := &ImageResource{}
-	resp := &resource.SchemaResponse{}
-	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
-
-	if attAttr, ok := resp.Schema.Attributes["attestation"].(schema.SingleNestedAttribute); ok {
-		if stepName, isStepName := attAttr.Attributes["step_name"].(schema.StringAttribute); isStepName {
-			if !stepName.IsComputed() || !stepName.IsOptional() {
-				t.Error("expected step_name to be optional+computed with default")
-			}
-		}
-
-		if outputPath, isOutputPath := attAttr.Attributes["output_path"].(schema.StringAttribute); isOutputPath {
-			if !outputPath.IsComputed() || !outputPath.IsOptional() {
-				t.Error("expected output_path to be optional+computed with default")
-			}
-		}
-
-		if signerKeyPath, isSignerKeyPath := attAttr.Attributes["signer_key_path"].(schema.StringAttribute); isSignerKeyPath {
-			if !signerKeyPath.IsOptional() {
-				t.Error("expected signer_key_path to be optional (auto-generates key when omitted)")
-			}
-		}
-
-		if exportSLSA, isExportSLSA := attAttr.Attributes["export_slsa"].(schema.BoolAttribute); isExportSLSA {
-			if !exportSLSA.IsComputed() || !exportSLSA.IsOptional() {
-				t.Error("expected export_slsa to be optional+computed")
-			}
-		}
-	}
-}
-
-func TestImageResource_Create_DefaultSBOMProvenance(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/build"):
-			_, _ = io.Copy(io.Discard, r.Body)
-
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]any{"stream": "Successfully built"})
-
-		case strings.Contains(r.URL.Path, "/json"):
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"Id":          "sha256:prov123",
-				"RepoDigests": []string{"localhost/test@sha256:prov123"},
-				"Size":        int64(5000),
-			})
-
-		default:
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	r := &ImageResource{config: &PodmanProviderConfig{
-		HTTPClient: server.Client(),
-		BaseURL:    server.URL,
-	}}
-
-	// Plan with null sbom block — provenance should still be applied.
-	vals := minimalImagePlanVals("localhost/test:prov", ".")
-	plan := makePlan(t, &ImageResource{}, vals)
-	state := makeState(t, &ImageResource{}, vals)
-
-	createResp := &resource.CreateResponse{State: state}
-	r.Create(t.Context(), resource.CreateRequest{Plan: plan}, createResp)
-
-	// Create may error because syft is not installed, but the SBOM model
-	// must be populated with defaults regardless.
-	var data ImageResourceModel
-	createResp.State.Get(t.Context(), &data)
-
-	// If there was no error (syft available), verify SBOM defaults applied.
-	if !createResp.Diagnostics.HasError() {
-		if data.SBOM == nil {
-			t.Fatal("expected SBOM block to be populated by default for provenance")
-		}
-
-		if data.SBOM.Format.ValueString() != "cyclonedx" {
-			t.Errorf(
-				"expected default SBOM format 'cyclonedx', got %q",
-				data.SBOM.Format.ValueString(),
-			)
-		}
-
-		if data.SBOM.OutputPath.ValueString() != "sbom.cyclonedx.json" {
-			t.Errorf(
-				"expected default SBOM output_path 'sbom.cyclonedx.json', got %q",
-				data.SBOM.OutputPath.ValueString(),
-			)
-		}
-	} else {
-		// Even on error the SBOM block should have been populated before
-		// generateSBOM was called, so we verify the model was set.
-		t.Log(
-			"Create returned error (syft likely not installed), verifying SBOM defaults were applied to model",
-		)
-	}
-}
-
-func TestImageResource_BuildWithAttestation_Defaults(t *testing.T) {
-	cfg := newTestConfig(t, mockPodmanHandler(t))
-	r := &ImageResource{config: cfg}
-
-	data := &ImageResourceModel{
-		Name: types.StringValue("localhost/test:att"),
-		Build: &ImageBuildModel{
-			Context:   types.StringValue("."),
-			BuildArgs: types.MapNull(types.StringType),
-			Pull:      types.BoolValue(false),
-		},
-		Attestation: &AttestationModel{
-			StepName:           types.StringValue("build"),
-			SignerKeyPath:      types.StringValue("/nonexistent/key.pem"),
-			OutputPath:         types.StringValue("attestation.json"),
-			Attestors:          types.ListNull(types.StringType),
-			ExportSLSA:         types.BoolValue(true),
-			EnableArchivista:   types.BoolValue(false),
-			ArchivistaServer:   types.StringNull(),
-			SignerKeyPathOut:   types.StringNull(),
-			SignerPublicKeyOut: types.StringNull(),
-		},
-	}
-
-	var diags diag.Diagnostics
-
-	err := r.buildImage(t.Context(), data, &diags)
-
-	// Expected to fail since /nonexistent/key.pem doesn't exist, but
-	// it should attempt the attestation path (not the standard build path).
-	if err == nil && !diags.HasError() {
-		t.Log("buildImage with attestation defaults succeeded unexpectedly")
-	}
-
-	// Verify the attestation model has the expected default values.
-	if data.Attestation.StepName.ValueString() != "build" {
-		t.Errorf(
-			"expected default step_name 'build', got %q",
-			data.Attestation.StepName.ValueString(),
-		)
-	}
-
-	if data.Attestation.OutputPath.ValueString() != "attestation.json" {
-		t.Errorf(
-			"expected default output_path 'attestation.json', got %q",
-			data.Attestation.OutputPath.ValueString(),
-		)
-	}
-
-	if !data.Attestation.ExportSLSA.ValueBool() {
-		t.Error("expected export_slsa to default to true")
-	}
-}
-
-func TestImageResource_Schema_AttestationKeyOutputs(t *testing.T) {
-	r := &ImageResource{}
-	resp := &resource.SchemaResponse{}
-	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
-
-	if attAttr, ok := resp.Schema.Attributes["attestation"].(schema.SingleNestedAttribute); ok {
-		names := make([]string, 0, len(attAttr.Attributes))
-		for name := range attAttr.Attributes {
-			names = append(names, name)
-		}
-
-		sort.Strings(names)
-
-		g := goldie.New(t, goldie.WithFixtureDir(".goldie"))
-		g.AssertJson(t, "image_attestation_attributes", names)
-	}
-}
-
-func TestImageResource_BuildWithAttestation_OutputsInputKey(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	cfg := &PodmanProviderConfig{
-		HTTPClient: server.Client(),
-		BaseURL:    server.URL,
-	}
-	r := &ImageResource{config: cfg}
-
-	data := &ImageResourceModel{
-		Name: types.StringValue("localhost/test:keyout"),
-		Build: &ImageBuildModel{
-			Context:   types.StringValue("."),
-			BuildArgs: types.MapNull(types.StringType),
-			Pull:      types.BoolValue(false),
-		},
-		Attestation: &AttestationModel{
-			StepName:           types.StringValue("build"),
-			SignerKeyPath:      types.StringValue("/my/provided/key.pem"),
-			OutputPath:         types.StringValue("attestation.json"),
-			Attestors:          types.ListNull(types.StringType),
-			ExportSLSA:         types.BoolValue(true),
-			EnableArchivista:   types.BoolValue(false),
-			ArchivistaServer:   types.StringNull(),
-			SignerKeyPathOut:   types.StringNull(),
-			SignerPublicKeyOut: types.StringNull(),
-		},
-	}
-
-	var diags diag.Diagnostics
-	if err := r.buildImage(t.Context(), data, &diags); err != nil {
-		t.Logf("buildImage failed: %v", err)
-	}
-
-	g := goldie.New(t, goldie.WithFixtureDir(".goldie"))
-	g.AssertJson(t, "image_attestation_input_key_output", map[string]string{
-		"signer_key_path_out":   data.Attestation.SignerKeyPathOut.ValueString(),
-		"signer_public_key_out": data.Attestation.SignerPublicKeyOut.ValueString(),
-	})
 }
 
 func TestImageResource_BuildWithAttestation_AutoGenerateKey(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(".cosign") })
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	cfg := &PodmanProviderConfig{
-		HTTPClient: server.Client(),
-		BaseURL:    server.URL,
-	}
+	cfg := newTestConfig(t, mockPodmanHandler(t))
 	r := &ImageResource{config: cfg}
 
 	data := &ImageResourceModel{
@@ -830,17 +553,6 @@ func TestImageResource_BuildWithAttestation_AutoGenerateKey(t *testing.T) {
 			BuildArgs: types.MapNull(types.StringType),
 			Pull:      types.BoolValue(false),
 		},
-		Attestation: &AttestationModel{
-			StepName:           types.StringValue("build"),
-			SignerKeyPath:      types.StringNull(),
-			OutputPath:         types.StringValue("attestation.json"),
-			Attestors:          types.ListNull(types.StringType),
-			ExportSLSA:         types.BoolValue(true),
-			EnableArchivista:   types.BoolValue(false),
-			ArchivistaServer:   types.StringNull(),
-			SignerKeyPathOut:   types.StringNull(),
-			SignerPublicKeyOut: types.StringNull(),
-		},
 	}
 
 	var diags diag.Diagnostics
@@ -849,14 +561,12 @@ func TestImageResource_BuildWithAttestation_AutoGenerateKey(t *testing.T) {
 	}
 
 	// Key generation should succeed even if the build itself fails.
-	if data.Attestation.SignerKeyPathOut.IsNull() ||
-		data.Attestation.SignerKeyPathOut.ValueString() == "" {
-		t.Fatal("expected signer_key_path_out to be populated")
+	if data.CosignPublicKey.IsNull() || data.CosignPublicKey.ValueString() == "" {
+		t.Fatal("expected cosign_public_key to be populated")
 	}
 
-	if data.Attestation.SignerPublicKeyOut.IsNull() ||
-		data.Attestation.SignerPublicKeyOut.ValueString() == "" {
-		t.Fatal("expected signer_public_key_out to be populated")
+	if data.AttestationPath.IsNull() || data.AttestationPath.ValueString() == "" {
+		t.Fatal("expected attestation_path to be populated")
 	}
 
 	// Must emit a WARNING about auto-generation.
@@ -879,19 +589,8 @@ func TestImageResource_GenerateSBOM_DefaultFormat(t *testing.T) {
 	r := &ImageResource{}
 
 	data := &ImageResourceModel{
-		Name: types.StringValue("localhost/test:v1"),
-		SBOM: &SBOMModel{
-			OutputPath: types.StringValue("/tmp/nonexistent-sbom-default.json"),
-			Format:     types.StringValue("cyclonedx"),
-		},
-	}
-
-	if data.SBOM.Format.ValueString() != "cyclonedx" {
-		t.Errorf("expected default format 'cyclonedx', got %q", data.SBOM.Format.ValueString())
-	}
-
-	if data.SBOM.OutputPath.ValueString() != "/tmp/nonexistent-sbom-default.json" {
-		t.Errorf("expected output_path to be set, got %q", data.SBOM.OutputPath.ValueString())
+		Name:     types.StringValue("localhost/test:v1"),
+		SBOMPath: types.StringValue("/tmp/nonexistent-sbom-default.json"),
 	}
 
 	var diags diag.Diagnostics
@@ -899,6 +598,28 @@ func TestImageResource_GenerateSBOM_DefaultFormat(t *testing.T) {
 
 	if !diags.HasError() {
 		t.Log("generateSBOM with defaults succeeded (syft may be installed)")
+	}
+}
+
+func TestImageBaseName(t *testing.T) {
+	tests := []struct {
+		ref  string
+		want string
+	}{
+		{"repo.example.com/org/myimage:v1", "myimage"},
+		{"localhost/test:latest", "test"},
+		{"registry.example.com/myimage@sha256:abc123", "myimage"},
+		{"myimage:v1", "myimage"},
+		{"myimage", "myimage"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			got := imageBaseName(tt.ref)
+			if got != tt.want {
+				t.Errorf("imageBaseName(%q) = %q, want %q", tt.ref, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1018,6 +739,8 @@ func TestImageResource_Delete_RemoveImage(t *testing.T) {
 }
 
 func TestImageResource_BuildWithAttestation_Error(t *testing.T) {
+	t.Cleanup(func() { os.RemoveAll(".cosign") })
+
 	cfg := newTestConfig(t, mockPodmanHandler(t))
 	r := &ImageResource{config: cfg}
 
@@ -1027,17 +750,6 @@ func TestImageResource_BuildWithAttestation_Error(t *testing.T) {
 			Context:   types.StringValue("."),
 			BuildArgs: types.MapNull(types.StringType),
 			Pull:      types.BoolValue(false),
-		},
-		Attestation: &AttestationModel{
-			StepName:           types.StringValue("build"),
-			SignerKeyPath:      types.StringValue("/nonexistent/key.pem"),
-			OutputPath:         types.StringValue("/tmp/attestation.json"),
-			Attestors:          types.ListNull(types.StringType),
-			ExportSLSA:         types.BoolValue(true),
-			EnableArchivista:   types.BoolValue(false),
-			ArchivistaServer:   types.StringNull(),
-			SignerKeyPathOut:   types.StringNull(),
-			SignerPublicKeyOut: types.StringNull(),
 		},
 	}
 
@@ -1226,14 +938,15 @@ func TestContextHashPlanModifier_InvalidContext(t *testing.T) {
 
 func TestContextHashPlanModifier_NilBuild(t *testing.T) {
 	vals := map[string]tftypes.Value{
-		"id":           tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"name":         tftypes.NewValue(tftypes.String, "test:v1"),
-		"repo_digest":  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"keep_locally": tftypes.NewValue(tftypes.Bool, false),
-		"context_hash": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"attestation":  tftypes.NewValue(attestationObjectType(), nil),
-		"sbom":         tftypes.NewValue(sbomObjectType(), nil),
-		"build":        tftypes.NewValue(buildObjectType(), nil),
+		"id":                tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"name":              tftypes.NewValue(tftypes.String, "test:v1"),
+		"repo_digest":       tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"keep_locally":      tftypes.NewValue(tftypes.Bool, false),
+		"context_hash":      tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"sbom_path":         tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"attestation_path":  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"cosign_public_key": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"build":             tftypes.NewValue(buildObjectType(), nil),
 	}
 
 	plan := makePlan(t, &ImageResource{}, vals)

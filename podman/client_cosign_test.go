@@ -172,3 +172,78 @@ func TestCosignClient_EnsureKeyPair_CreatesNestedDir(t *testing.T) {
 		t.Error("public key file was not created in nested directory")
 	}
 }
+
+func TestCosignClient_EnsureKeyPair_Permissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".cosign")
+	client := NewCosignClient()
+
+	result, err := client.EnsureKeyPair(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("EnsureKeyPair failed: %v", err)
+	}
+
+	// Directory must be 0o700 (owner-only) since it contains private keys.
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("failed to stat directory: %v", err)
+	}
+
+	dirPerm := dirInfo.Mode().Perm()
+	if dirPerm != 0o700 {
+		t.Errorf("expected directory permissions 0700, got %04o", dirPerm)
+	}
+
+	// Private key must be 0o600.
+	privInfo, err := os.Stat(result.PrivateKeyPath)
+	if err != nil {
+		t.Fatalf("failed to stat private key: %v", err)
+	}
+
+	privPerm := privInfo.Mode().Perm()
+	if privPerm != 0o600 {
+		t.Errorf("expected private key permissions 0600, got %04o", privPerm)
+	}
+
+	// Public key must be 0o644 (world-readable for verification).
+	pubInfo, err := os.Stat(result.PublicKeyPath)
+	if err != nil {
+		t.Fatalf("failed to stat public key: %v", err)
+	}
+
+	pubPerm := pubInfo.Mode().Perm()
+	if pubPerm != 0o644 {
+		t.Errorf("expected public key permissions 0644, got %04o", pubPerm)
+	}
+}
+
+func TestVerifyOpts_Defaults(t *testing.T) {
+	opts := VerifyOpts{}
+
+	if opts.SkipTlog {
+		t.Error("expected SkipTlog to be false by default")
+	}
+
+	if opts.RekorURL != "" {
+		t.Error("expected RekorURL to be empty by default")
+	}
+}
+
+func TestCosignClient_VerifyImage_MissingBinary(t *testing.T) {
+	client := NewCosignClient()
+
+	// Use a PATH that won't find cosign to test error handling.
+	t.Setenv("PATH", t.TempDir())
+
+	err := client.VerifyImage(t.Context(), VerifyOpts{
+		ImageRef: "localhost/nonexistent:v1",
+		KeyPath:  "/nonexistent/key.pub",
+	})
+
+	if err == nil {
+		t.Error("expected error when cosign binary is not found")
+	}
+
+	if !strings.Contains(err.Error(), "cosign verify failed") {
+		t.Errorf("expected 'cosign verify failed' in error, got: %s", err.Error())
+	}
+}

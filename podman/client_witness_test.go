@@ -17,6 +17,7 @@
 package podman
 
 import (
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -65,22 +66,57 @@ func TestSimpleTimestamper_Interface(t *testing.T) {
 	}
 }
 
-func TestCollectSubjects_Empty(t *testing.T) {
-	tests := []struct {
-		name  string
-		input []attestation.CompletedAttestor
-	}{
-		{"nil", nil},
-		{"empty_slice", []attestation.CompletedAttestor{}},
+func TestBuildRunAttestor_NilFn(t *testing.T) {
+	b := &buildRunAttestor{fn: nil}
+	if err := b.Attest(nil); err != nil {
+		t.Errorf("expected nil fn to succeed, got: %v", err)
 	}
+	if b.ExitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", b.ExitCode)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			subjects := collectSubjects(tt.input)
-			if len(subjects) != 0 {
-				t.Errorf("expected empty subjects, got %d", len(subjects))
-			}
-		})
+func TestBuildRunAttestor_Success(t *testing.T) {
+	called := false
+	b := &buildRunAttestor{fn: func() error { called = true; return nil }}
+	if err := b.Attest(nil); err != nil {
+		t.Errorf("expected success, got: %v", err)
+	}
+	if !called {
+		t.Error("expected buildFn to be called")
+	}
+	if b.ExitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", b.ExitCode)
+	}
+}
+
+func TestBuildRunAttestor_Failure(t *testing.T) {
+	b := &buildRunAttestor{fn: func() error { return fmt.Errorf("build broke") }}
+	err := b.Attest(nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "build broke") {
+		t.Errorf("expected 'build broke' in error, got: %s", err.Error())
+	}
+	if b.ExitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", b.ExitCode)
+	}
+}
+
+func TestBuildRunAttestor_Interface(t *testing.T) {
+	b := &buildRunAttestor{}
+	if b.Name() != "buildrun" {
+		t.Errorf("expected name 'buildrun', got %q", b.Name())
+	}
+	if b.Type() != "https://witness.dev/attestations/buildrun/v0.1" {
+		t.Errorf("unexpected type: %s", b.Type())
+	}
+	if b.RunType() != attestation.ExecuteRunType {
+		t.Errorf("expected ExecuteRunType, got %s", b.RunType())
+	}
+	if b.Schema() == nil {
+		t.Error("expected non-nil schema")
 	}
 }
 

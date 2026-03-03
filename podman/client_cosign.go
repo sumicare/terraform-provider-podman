@@ -18,9 +18,13 @@ package podman
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	cosignAttest "github.com/sigstore/cosign/v2/cmd/cosign/cli/attest"
@@ -61,16 +65,15 @@ func (c *CosignClient) SignImage(ctx context.Context, opts SignOpts) error {
 		"keyless":   opts.Keyless,
 	})
 
-	if opts.Password != "" {
-		if err := os.Setenv("COSIGN_PASSWORD", opts.Password); err != nil {
-			return fmt.Errorf("failed to set COSIGN_PASSWORD: %w", err)
-		}
-
-		defer os.Unsetenv("COSIGN_PASSWORD")
-	}
-
 	ko := options.KeyOpts{
 		SkipConfirmation: true,
+	}
+
+	if opts.Password != "" {
+		password := opts.Password
+		ko.PassFunc = func(_ bool) ([]byte, error) {
+			return []byte(password), nil
+		}
 	}
 
 	signOpts := options.SignOptions{
@@ -102,6 +105,44 @@ func (c *CosignClient) SignImage(ctx context.Context, opts SignOpts) error {
 	return nil
 }
 
+type VerifyOpts struct {
+	ImageRef string
+	KeyPath  string
+	RekorURL string
+	SkipTlog bool
+}
+
+func (c *CosignClient) VerifyImage(ctx context.Context, opts VerifyOpts) error {
+	tflog.Info(ctx, "Verifying image signature with cosign", map[string]any{
+		"image_ref": opts.ImageRef,
+		"key_path":  opts.KeyPath,
+	})
+
+	args := []string{"verify", "--key", opts.KeyPath}
+
+	if opts.SkipTlog {
+		args = append(args, "--insecure-ignore-tlog=true")
+	}
+
+	if opts.RekorURL != "" {
+		args = append(args, "--rekor-url", opts.RekorURL)
+	}
+
+	args = append(args, opts.ImageRef)
+
+	cmd := exec.CommandContext(ctx, "cosign", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("cosign verify failed for %s: %s: %w", opts.ImageRef, string(output), err)
+	}
+
+	tflog.Info(ctx, "Image signature verified successfully", map[string]any{
+		"image_ref": opts.ImageRef,
+	})
+
+	return nil
+}
+
 func (c *CosignClient) AttestImage(ctx context.Context, opts AttestOpts) error {
 	tflog.Info(ctx, "Attaching attestation to image", map[string]any{
 		"image_ref":      opts.ImageRef,
@@ -109,23 +150,24 @@ func (c *CosignClient) AttestImage(ctx context.Context, opts AttestOpts) error {
 		"predicate_type": opts.PredicateType,
 	})
 
-	if opts.Password != "" {
-		if err := os.Setenv("COSIGN_PASSWORD", opts.Password); err != nil {
-			return fmt.Errorf("failed to set COSIGN_PASSWORD: %w", err)
-		}
-
-		defer os.Unsetenv("COSIGN_PASSWORD")
-	}
-
 	predicateType := opts.PredicateType
 	if predicateType == "" {
 		predicateType = "custom"
 	}
 
+	ko := options.KeyOpts{
+		SkipConfirmation: true,
+	}
+
+	if opts.Password != "" {
+		password := opts.Password
+		ko.PassFunc = func(_ bool) ([]byte, error) {
+			return []byte(password), nil
+		}
+	}
+
 	cmd := &cosignAttest.AttestCommand{
-		KeyOpts: options.KeyOpts{
-			SkipConfirmation: true,
-		},
+		KeyOpts:       ko,
 		PredicatePath: opts.PredicatePath,
 		PredicateType: predicateType,
 		TlogUpload:    true,
@@ -152,12 +194,55 @@ func (c *CosignClient) AttestImage(ctx context.Context, opts AttestOpts) error {
 	return nil
 }
 
+// passphraseFile is the name of the file inside the key directory that stores
+// the random passphrase used to encrypt auto-generated cosign key pairs.
+const passphraseFile = "PASSPHRASE"
+
+// passphraseLength is the number of random printable ASCII characters.
+const passphraseLength = 32
+
 type GenerateKeyPairResult struct {
 	PrivateKeyPath string
 	PublicKeyPath  string
 	PrivateKeyPEM  []byte
 	PublicKeyPEM   []byte
+	Passphrase     string
 	Reused         bool
+}
+
+// ensurePassphrase reads an existing passphrase from dir/PASSPHRASE or generates
+// a new random ASCII passphrase, writes it with 0600 permissions, and returns it.
+func ensurePassphrase(dir string) (string, error) {
+	path := filepath.Join(dir, passphraseFile)
+
+	if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+		return strings.TrimRight(string(data), "\n\r"), nil
+	}
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create key directory %s: %w", dir, err)
+	}
+
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+"
+
+	buf := make([]byte, passphraseLength)
+
+	for i := range buf {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			return "", fmt.Errorf("failed to generate random passphrase: %w", err)
+		}
+
+		buf[i] = charset[n.Int64()]
+	}
+
+	passphrase := string(buf)
+
+	if err := os.WriteFile(path, []byte(passphrase), 0o600); err != nil {
+		return "", fmt.Errorf("failed to write passphrase to %s: %w", path, err)
+	}
+
+	return passphrase, nil
 }
 
 // EnsureKeyPair reuses an existing key pair from dir, or generates a new one.
@@ -172,6 +257,11 @@ func (c *CosignClient) EnsureKeyPair(
 	privBytes, privErr := os.ReadFile(privPath)
 	pubBytes, pubErr := os.ReadFile(pubPath)
 
+	passphrase, passErr := ensurePassphrase(dir)
+	if passErr != nil {
+		return nil, passErr
+	}
+
 	if privErr == nil && pubErr == nil && len(privBytes) > 0 && len(pubBytes) > 0 {
 		tflog.Info(ctx, "Reusing existing cosign key pair", map[string]any{
 			"private_key": privPath,
@@ -183,18 +273,19 @@ func (c *CosignClient) EnsureKeyPair(
 			PublicKeyPath:  pubPath,
 			PrivateKeyPEM:  privBytes,
 			PublicKeyPEM:   pubBytes,
+			Passphrase:     passphrase,
 			Reused:         true,
 		}, nil
 	}
 
 	tflog.Info(ctx, "Generating cosign key pair", map[string]any{"dir": dir})
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create key output directory %s: %w", dir, err)
 	}
 
 	keys, err := cosign.GenerateKeyPair(func(_ bool) ([]byte, error) {
-		return []byte(""), nil
+		return []byte(passphrase), nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("cosign key pair generation failed: %w", err)
@@ -204,7 +295,7 @@ func (c *CosignClient) EnsureKeyPair(
 		return nil, fmt.Errorf("failed to write private key to %s: %w", privPath, writeErr)
 	}
 
-	if writeErr := os.WriteFile(pubPath, keys.PublicBytes, 0o600); writeErr != nil {
+	if writeErr := os.WriteFile(pubPath, keys.PublicBytes, 0o644); writeErr != nil {
 		return nil, fmt.Errorf("failed to write public key to %s: %w", pubPath, writeErr)
 	}
 
@@ -218,6 +309,7 @@ func (c *CosignClient) EnsureKeyPair(
 		PublicKeyPath:  pubPath,
 		PrivateKeyPEM:  keys.PrivateBytes,
 		PublicKeyPEM:   keys.PublicBytes,
+		Passphrase:     passphrase,
 		Reused:         false,
 	}, nil
 }

@@ -7,11 +7,11 @@ Built on the modern Terraform Plugin Framework.
 ## Features
 
 - **Image builds** from Containerfiles with automatic change detection (context hashing)
-- **SBOM generation** via [syft](https://github.com/anchore/syft) — enabled by default for every build
-- **In-toto attestation** via [Witness](https://github.com/in-toto/witness) — signed DSSE envelopes with SLSA provenance
-- **Cosign signing** via [Sigstore](https://www.sigstore.dev/) — key-based or keyless (Fulcio/Rekor)
-- **Auto-generated signing keys** — when no key is provided, a cosign key pair is generated and shared across all resources in the root module (`.cosign/`)
-- **Registry push** with optional signing, attestation attachment, and SBOM attachment
+- **Always-on SBOM generation** via [syft](https://github.com/anchore/syft) — CycloneDX SBOM for every build
+- **Always-on in-toto attestation** via [Witness](https://github.com/in-toto/witness) — signed DSSE envelopes with SLSA provenance
+- **Always-on cosign signing** via [Sigstore](https://www.sigstore.dev/) — automatic key-based signing on registry push
+- **Auto-generated signing keys** — a cosign key pair is generated with a random passphrase and shared across all resources in the root module (`.cosign/`)
+- **Registry push** with automatic signing, attestation attachment, and SBOM attachment
 - **Remote Podman** via SSH (URI-based)
 
 ## Quick Start
@@ -28,7 +28,7 @@ terraform {
 
 provider "podman" {}
 
-# Build an image — SBOM is generated automatically
+# Build an image — SBOM + attestation are generated automatically
 resource "podman_image" "app" {
   name = "myapp:latest"
   build {
@@ -36,90 +36,68 @@ resource "podman_image" "app" {
   }
 }
 
-# Push to registry and sign
+# Push to registry — signing + attestation/SBOM attachment happen automatically
 resource "podman_registry_image" "app_push" {
-  name = "docker.io/myorg/myapp:latest"
+  name = podman_image.app.name
 
-  signing {
-    # No cosign_key_path needed — a key pair is auto-generated in .cosign/
-  }
+  depends_on = [podman_image.app]
+}
+
+# The public key and artifact paths are available as computed outputs:
+output "cosign_public_key" {
+  value = podman_image.app.cosign_public_key
 }
 ```
 
-> When `signing` or `attestation` blocks are present without a key path, the provider
-> auto-generates a cosign key pair at `.cosign/cosign.key` and `.cosign/cosign.pub`
-> in your root module directory. A Terraform **warning** is emitted so you are aware.
-> Multiple resources reuse the same generated key.
+> No configuration is required for SBOM, attestation, or signing — the provider handles
+> everything automatically. A cosign key pair is generated at `.cosign/cosign.key` and
+> `.cosign/cosign.pub` with a random passphrase stored at `.cosign/PASSPHRASE` (0600 permissions).
+> A Terraform **warning** is emitted so you are always aware. Multiple resources reuse the same key.
 
 ## Resources
 
 ### `podman_image`
 
-Builds a Podman image from a Containerfile. Supports SBOM generation and in-toto Witness attestation.
+Builds a Podman image from a Containerfile. Automatically generates a CycloneDX SBOM and a signed in-toto attestation for every build.
 
 | Attribute | Type | Description |
 |---|---|---|
 | `name` | string, **required** | Image name including tag |
 | `build` | block, **required** | Build configuration (`context`, `build_args`, `pull`) |
-| `sbom` | block, optional | SBOM generation — defaults to CycloneDX at `sbom.cyclonedx.json` |
-| `attestation` | block, optional | Witness attestation — wraps the build with `witness run` |
 | `keep_locally` | bool, optional | Keep image on destroy (default: `false`) |
-
-#### SBOM block
-
-| Attribute | Default | Description |
-|---|---|---|
-| `output_path` | `sbom.cyclonedx.json` | File path for the SBOM |
-| `format` | `cyclonedx` | `cyclonedx` or `spdx-json` |
-
-#### Attestation block
-
-| Attribute | Default | Description |
-|---|---|---|
-| `step_name` | `build` | Witness step name for policy evaluation |
-| `signer_key_path` | *(auto-generated)* | PEM private key for signing; omit to auto-generate |
-| `output_path` | `attestation.json` | Output path for the DSSE envelope |
-| `attestors` | `[]` | Additional attestors (`slsa`, `gcp`, `gitlab`, etc.) |
-| `export_slsa` | `true` | Export SLSA provenance predicate |
-| `enable_archivista` | `false` | Store attestations in Archivista |
-| `archivista_server` | — | Archivista server URL |
 
 **Computed outputs:**
 
-- `signer_key_path_out` — the private key path actually used (input or generated)
-- `signer_public_key_out` — the public key path (set when auto-generated)
+| Output | Description |
+|---|---|
+| `sbom_path` | Path to the generated CycloneDX SBOM (`.sbom/<image>.cyclonedx.json`) |
+| `attestation_path` | Path to the signed DSSE envelope (`.sbom/<image>.intoto.json`) |
+| `cosign_public_key` | PEM-encoded cosign public key used for signing |
+| `context_hash` | SHA-256 hash of the build context for change detection |
+| `repo_digest` | Image digest after build |
 
 ### `podman_registry_image`
 
-Pushes a local image to a container registry. Optionally signs the image and attaches attestations/SBOMs with cosign.
+Pushes a local image to a container registry. Automatically signs the image and attaches the SBOM and in-toto attestation with cosign.
 
 | Attribute | Type | Description |
 |---|---|---|
 | `name` | string, **required** | Full registry image reference |
 | `auth_config` | block, optional | Registry credentials (`address`, `username`, `password`) |
-| `signing` | block, optional | Cosign signing configuration |
-
-#### Signing block
-
-| Attribute | Default | Description |
-|---|---|---|
-| `cosign_key_path` | *(auto-generated)* | Cosign private key; omit to auto-generate |
-| `cosign_password` | — | Key password (or set `COSIGN_PASSWORD`) |
-| `keyless` | `false` | Use Fulcio/Rekor OIDC-based keyless signing |
-| `fulcio_url` | — | Custom Fulcio URL |
-| `rekor_url` | — | Custom Rekor URL |
-| `attestation_path` | — | DSSE envelope to attach (from `podman_image`) |
-| `predicate_type` | — | In-toto predicate type |
-| `sbom_path` | — | SBOM file to attach |
+| `keep_remotely` | bool, optional | Keep image in registry on destroy (default: `false`) |
 
 **Computed outputs:**
 
-- `cosign_key_path_out` — the signing key path actually used (input or generated)
-- `cosign_public_key_out` — the public key path (set when auto-generated)
+| Output | Description |
+|---|---|
+| `digest` | Image digest after push |
+| `sbom_path` | Path to the attached SBOM |
+| `attestation_path` | Path to the attached attestation |
+| `cosign_public_key` | PEM-encoded cosign public key used for signing |
 
 ## Examples
 
-### Minimal build (SBOM generated automatically)
+### Minimal build
 
 ```hcl
 resource "podman_image" "app" {
@@ -130,7 +108,9 @@ resource "podman_image" "app" {
 }
 ```
 
-### Build with attestation (auto-generated key)
+SBOM is written to `.sbom/myapp.cyclonedx.json` and attestation to `.sbom/myapp.intoto.json` automatically.
+
+### Build and push
 
 ```hcl
 resource "podman_image" "app" {
@@ -139,48 +119,22 @@ resource "podman_image" "app" {
     context    = "./app"
     build_args = { VERSION = "1.0.0" }
   }
-
-  attestation {
-    attestors = ["slsa"]
-  }
-
-  sbom {
-    format = "spdx-json"
-  }
 }
 
-# The generated key is available for downstream use:
-output "signing_public_key" {
-  value = podman_image.app.attestation.signer_public_key_out
-}
-```
-
-### Build with your own key
-
-```hcl
-resource "podman_image" "app" {
-  name = "myapp:v1.0.0"
-  build {
-    context = "./app"
-  }
-
-  attestation {
-    signer_key_path = var.signing_key_path
-  }
-}
-```
-
-### Push, sign, and attach attestation + SBOM
-
-```hcl
 resource "podman_registry_image" "app_push" {
-  name = "docker.io/myorg/myapp:v1.0.0"
+  name = podman_image.app.name
 
-  signing {
-    attestation_path = podman_image.app.attestation.output_path
-    predicate_type   = "slsaprovenance"
-    sbom_path        = podman_image.app.sbom.output_path
+  auth_config = {
+    address  = "registry.example.com"
+    username = var.registry_user
+    password = var.registry_pass
   }
+
+  depends_on = [podman_image.app]
+}
+
+output "signing_public_key" {
+  value = podman_registry_image.app_push[0].cosign_public_key
 }
 ```
 
@@ -190,30 +144,14 @@ resource "podman_registry_image" "app_push" {
 resource "podman_image" "frontend" {
   name = "frontend:v1"
   build { context = "./frontend" }
-  attestation {}
 }
 
 resource "podman_image" "backend" {
   name = "backend:v1"
   build { context = "./backend" }
-  attestation {}
 }
 
 # Both use the same .cosign/cosign.key — generated once, reused automatically.
-```
-
-### Keyless signing (Sigstore)
-
-```hcl
-resource "podman_registry_image" "app_push" {
-  name = "docker.io/myorg/myapp:v1.0.0"
-
-  signing {
-    keyless    = true
-    fulcio_url = "https://fulcio.sigstore.dev"
-    rekor_url  = "https://rekor.sigstore.dev"
-  }
-}
 ```
 
 ## Provider Configuration
@@ -237,15 +175,15 @@ Environment variable: `PODMAN_HOST`
 
 ## Auto-Generated Key Behavior
 
-When a `signing` or `attestation` block is present without an explicit key path:
+Every `podman_image` build and `podman_registry_image` push automatically uses a cosign key pair:
 
-1. The provider looks for an existing key pair at `.cosign/cosign.key` and `.cosign/cosign.pub` in your root module directory.
-2. If found, it reuses the existing key pair.
-3. If not found, it generates a new cosign ECDSA key pair (with an empty password) and writes it there.
+1. The provider looks for an existing key pair at `.cosign/cosign.key` and `.cosign/cosign.pub`.
+2. If found, it reuses the existing key pair with the passphrase from `.cosign/PASSPHRASE`.
+3. If not found, it generates a new cosign ECDSA key pair encrypted with a random 32-character ASCII passphrase, and writes all three files (key, pub, passphrase) to `.cosign/` with `0600` permissions.
 4. A Terraform **warning** is emitted in both cases so you are always aware.
-5. The key paths are exposed as computed outputs (`cosign_key_path_out`, `cosign_public_key_out` or `signer_key_path_out`, `signer_public_key_out`) so you can reference them elsewhere.
+5. The public key is exposed as the computed `cosign_public_key` attribute on both resources.
 
-> **Tip:** Add `.cosign/` to your `.gitignore` to avoid committing auto-generated keys.
+> **Tip:** Add `.cosign/` and `.sbom/` to your `.gitignore` to avoid committing auto-generated keys and artifacts.
 
 ## Development
 

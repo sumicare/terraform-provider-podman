@@ -41,23 +41,6 @@ var (
 	_ resource.ResourceWithImportState = &RegistryImageResource{}
 )
 
-func signingObjectType() tftypes.Object {
-	return tftypes.Object{
-		AttributeTypes: map[string]tftypes.Type{
-			"cosign_key_path":       tftypes.String,
-			"cosign_password":       tftypes.String,
-			"keyless":               tftypes.Bool,
-			"fulcio_url":            tftypes.String,
-			"rekor_url":             tftypes.String,
-			"attestation_path":      tftypes.String,
-			"predicate_type":        tftypes.String,
-			"sbom_path":             tftypes.String,
-			"cosign_key_path_out":   tftypes.String,
-			"cosign_public_key_out": tftypes.String,
-		},
-	}
-}
-
 func authConfigObjectType() tftypes.Object {
 	return tftypes.Object{
 		AttributeTypes: map[string]tftypes.Type{
@@ -70,38 +53,44 @@ func authConfigObjectType() tftypes.Object {
 
 func minimalRegistryImagePlanVals(name string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
-		"id":            tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"name":          tftypes.NewValue(tftypes.String, name),
-		"keep_remotely": tftypes.NewValue(tftypes.Bool, false),
-		"digest":        tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"auth_config":   tftypes.NewValue(authConfigObjectType(), nil),
-		"signing":       tftypes.NewValue(signingObjectType(), nil),
+		"id":                tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"name":              tftypes.NewValue(tftypes.String, name),
+		"keep_remotely":     tftypes.NewValue(tftypes.Bool, false),
+		"digest":            tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"sbom_path":         tftypes.NewValue(tftypes.String, nil),
+		"attestation_path":  tftypes.NewValue(tftypes.String, nil),
+		"cosign_public_key": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"auth_config":       tftypes.NewValue(authConfigObjectType(), nil),
 	}
 }
 
 func minimalRegistryImageStateVals(name string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
-		"id":            tftypes.NewValue(tftypes.String, name),
-		"name":          tftypes.NewValue(tftypes.String, name),
-		"keep_remotely": tftypes.NewValue(tftypes.Bool, false),
-		"digest":        tftypes.NewValue(tftypes.String, "sha256:abc123"),
-		"auth_config":   tftypes.NewValue(authConfigObjectType(), nil),
-		"signing":       tftypes.NewValue(signingObjectType(), nil),
+		"id":                tftypes.NewValue(tftypes.String, name),
+		"name":              tftypes.NewValue(tftypes.String, name),
+		"keep_remotely":     tftypes.NewValue(tftypes.Bool, false),
+		"digest":            tftypes.NewValue(tftypes.String, "sha256:abc123"),
+		"sbom_path":         tftypes.NewValue(tftypes.String, ""),
+		"attestation_path":  tftypes.NewValue(tftypes.String, ""),
+		"cosign_public_key": tftypes.NewValue(tftypes.String, ""),
+		"auth_config":       tftypes.NewValue(authConfigObjectType(), nil),
 	}
 }
 
 func registryImagePlanWithAuth(name, address, username, password string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
-		"id":            tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"name":          tftypes.NewValue(tftypes.String, name),
-		"keep_remotely": tftypes.NewValue(tftypes.Bool, false),
-		"digest":        tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"id":                tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"name":              tftypes.NewValue(tftypes.String, name),
+		"keep_remotely":     tftypes.NewValue(tftypes.Bool, false),
+		"digest":            tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"sbom_path":         tftypes.NewValue(tftypes.String, nil),
+		"attestation_path":  tftypes.NewValue(tftypes.String, nil),
+		"cosign_public_key": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
 		"auth_config": tftypes.NewValue(authConfigObjectType(), map[string]tftypes.Value{
 			"address":  tftypes.NewValue(tftypes.String, address),
 			"username": tftypes.NewValue(tftypes.String, username),
 			"password": tftypes.NewValue(tftypes.String, password),
 		}),
-		"signing": tftypes.NewValue(signingObjectType(), nil),
 	}
 }
 
@@ -114,7 +103,10 @@ func TestRegistryImageResource_Schema(t *testing.T) {
 		t.Fatal("expected non-empty schema description")
 	}
 
-	topLevel := []string{"id", "name", "keep_remotely", "digest", "auth_config", "signing"}
+	topLevel := []string{
+		"id", "name", "keep_remotely", "digest", "auth_config",
+		"sbom_path", "attestation_path", "cosign_public_key",
+	}
 	for _, attr := range topLevel {
 		if _, ok := resp.Schema.Attributes[attr]; !ok {
 			t.Errorf("missing attribute %q", attr)
@@ -131,16 +123,17 @@ func TestRegistryImageResource_Schema(t *testing.T) {
 		}
 	})
 
-	t.Run("signing_sub_attributes", func(t *testing.T) {
-		if nested, ok := resp.Schema.Attributes["signing"].(schema.SingleNestedAttribute); ok {
-			for _, sub := range []string{
-				"cosign_key_path", "cosign_password", "keyless",
-				"fulcio_url", "rekor_url", "attestation_path",
-				"predicate_type", "sbom_path",
-			} {
-				if _, exists := nested.Attributes[sub]; !exists {
-					t.Errorf("missing signing sub-attribute %q", sub)
-				}
+	t.Run("computed_outputs", func(t *testing.T) {
+		for _, attr := range []string{"cosign_public_key"} {
+			a, ok := resp.Schema.Attributes[attr].(schema.StringAttribute)
+			if !ok {
+				t.Errorf("expected %q to be a StringAttribute", attr)
+
+				continue
+			}
+
+			if !a.IsComputed() {
+				t.Errorf("expected %q to be computed", attr)
 			}
 		}
 	})
@@ -218,6 +211,8 @@ func TestRegistryImageResource_Update(t *testing.T) {
 }
 
 func TestRegistryImageResource_SignImage_ImageRef(t *testing.T) {
+	t.Cleanup(func() { os.RemoveAll(".cosign") })
+
 	tests := []struct {
 		name    string
 		imgName string
@@ -256,82 +251,39 @@ func TestRegistryImageResource_SignImage_ImageRef(t *testing.T) {
 			data := &RegistryImageResourceModel{
 				Name:   types.StringValue(tt.imgName),
 				Digest: tt.digest,
-				Signing: &SigningModel{
-					CosignKeyPath:      types.StringValue("/nonexistent/key.pem"),
-					CosignPassword:     types.StringNull(),
-					Keyless:            types.BoolValue(false),
-					FulcioURL:          types.StringNull(),
-					RekorURL:           types.StringNull(),
-					AttestationPath:    types.StringNull(),
-					PredicateType:      types.StringNull(),
-					SBOMPath:           types.StringNull(),
-					CosignKeyPathOut:   types.StringNull(),
-					CosignPublicKeyOut: types.StringNull(),
-				},
 			}
 
 			var diags diag.Diagnostics
 			r.signImage(t.Context(), data, &diags)
 
-			// Signing will fail (no cosign) – check the imageRef in the error.
+			// Signing will fail (no registry) – check the imageRef in the error.
 			if !diags.HasError() {
 				t.Log("signImage succeeded unexpectedly (cosign may be available)")
 
 				return
 			}
 
-			errMsg := diags.Errors()[0].Detail()
-			if !strings.Contains(errMsg, tt.wantRef) {
-				t.Errorf("expected imageRef %q in error, got: %s", tt.wantRef, errMsg)
+			// Find the cosign sign error (skip key generation warnings).
+			for _, d := range diags.Errors() {
+				if strings.Contains(d.Detail(), tt.wantRef) {
+					return
+				}
 			}
+
+			t.Errorf("expected imageRef %q in error diagnostics", tt.wantRef)
 		})
 	}
 }
 
-func TestRegistryImageResource_SignImage_Keyless(t *testing.T) {
-	r := &RegistryImageResource{}
-	data := &RegistryImageResourceModel{
-		Name:   types.StringValue("registry.example.com/myimage:v1"),
-		Digest: types.StringNull(),
-		Signing: &SigningModel{
-			CosignKeyPath:      types.StringNull(),
-			CosignPassword:     types.StringNull(),
-			Keyless:            types.BoolValue(true),
-			FulcioURL:          types.StringValue("https://fulcio.example.com"),
-			RekorURL:           types.StringValue("https://rekor.example.com"),
-			AttestationPath:    types.StringNull(),
-			PredicateType:      types.StringNull(),
-			SBOMPath:           types.StringNull(),
-			CosignKeyPathOut:   types.StringNull(),
-			CosignPublicKeyOut: types.StringNull(),
-		},
-	}
-
-	var diags diag.Diagnostics
-	r.signImage(t.Context(), data, &diags)
-
-	if !diags.HasError() {
-		t.Log("signImage (keyless) succeeded unexpectedly")
-	}
-}
-
 func TestRegistryImageResource_SignImage_WithAttestationAndSBOM(t *testing.T) {
+	t.Cleanup(func() { os.RemoveAll(".cosign") })
+
 	r := &RegistryImageResource{}
 	data := &RegistryImageResourceModel{
-		Name:   types.StringValue("registry.example.com/myimage:v1"),
-		Digest: types.StringNull(),
-		Signing: &SigningModel{
-			CosignKeyPath:      types.StringValue("/nonexistent/key.pem"),
-			CosignPassword:     types.StringValue("password"),
-			Keyless:            types.BoolValue(false),
-			FulcioURL:          types.StringNull(),
-			RekorURL:           types.StringNull(),
-			AttestationPath:    types.StringValue("/tmp/attestation.json"),
-			PredicateType:      types.StringValue("slsaprovenance"),
-			SBOMPath:           types.StringValue("/tmp/sbom.json"),
-			CosignKeyPathOut:   types.StringNull(),
-			CosignPublicKeyOut: types.StringNull(),
-		},
+		Name:            types.StringValue("registry.example.com/myimage:v1"),
+		Digest:          types.StringNull(),
+		AttestationPath: types.StringValue("/tmp/attestation.json"),
+		SBOMPath:        types.StringValue("/tmp/sbom.json"),
 	}
 
 	var diags diag.Diagnostics
@@ -349,31 +301,14 @@ func TestRegistryImageResource_SignImage_AutoGenerateKey(t *testing.T) {
 	data := &RegistryImageResourceModel{
 		Name:   types.StringValue("registry.example.com/myimage:v1"),
 		Digest: types.StringNull(),
-		Signing: &SigningModel{
-			CosignKeyPath:      types.StringNull(),
-			CosignPassword:     types.StringNull(),
-			Keyless:            types.BoolValue(false),
-			FulcioURL:          types.StringNull(),
-			RekorURL:           types.StringNull(),
-			AttestationPath:    types.StringNull(),
-			PredicateType:      types.StringNull(),
-			SBOMPath:           types.StringNull(),
-			CosignKeyPathOut:   types.StringNull(),
-			CosignPublicKeyOut: types.StringNull(),
-		},
 	}
 
 	var diags diag.Diagnostics
 	r.signImage(t.Context(), data, &diags)
 
 	// Key generation should have happened (signing itself may fail).
-	if data.Signing.CosignKeyPathOut.IsNull() || data.Signing.CosignKeyPathOut.ValueString() == "" {
-		t.Fatal("expected cosign_key_path_out to be populated")
-	}
-
-	if data.Signing.CosignPublicKeyOut.IsNull() ||
-		data.Signing.CosignPublicKeyOut.ValueString() == "" {
-		t.Fatal("expected cosign_public_key_out to be populated")
+	if data.CosignPublicKey.IsNull() || data.CosignPublicKey.ValueString() == "" {
+		t.Fatal("expected cosign_public_key to be populated")
 	}
 
 	// Must emit a WARNING about auto-generation.
@@ -389,53 +324,6 @@ func TestRegistryImageResource_SignImage_AutoGenerateKey(t *testing.T) {
 
 	if !foundWarning {
 		t.Error("expected a warning diagnostic about auto-generated cosign key pair")
-	}
-}
-
-func TestRegistryImageResource_SignImage_OutputsInputKey(t *testing.T) {
-	r := &RegistryImageResource{}
-	data := &RegistryImageResourceModel{
-		Name:   types.StringValue("registry.example.com/myimage:v1"),
-		Digest: types.StringNull(),
-		Signing: &SigningModel{
-			CosignKeyPath:      types.StringValue("/my/custom/key.pem"),
-			CosignPassword:     types.StringNull(),
-			Keyless:            types.BoolValue(false),
-			FulcioURL:          types.StringNull(),
-			RekorURL:           types.StringNull(),
-			AttestationPath:    types.StringNull(),
-			PredicateType:      types.StringNull(),
-			SBOMPath:           types.StringNull(),
-			CosignKeyPathOut:   types.StringNull(),
-			CosignPublicKeyOut: types.StringNull(),
-		},
-	}
-
-	var diags diag.Diagnostics
-	r.signImage(t.Context(), data, &diags)
-
-	g := goldie.New(t, goldie.WithFixtureDir(".goldie"))
-	g.AssertJson(t, "registry_signing_input_key_output", map[string]string{
-		"cosign_key_path_out":   data.Signing.CosignKeyPathOut.ValueString(),
-		"cosign_public_key_out": data.Signing.CosignPublicKeyOut.ValueString(),
-	})
-}
-
-func TestRegistryImageResource_Schema_SigningOutputs(t *testing.T) {
-	r := &RegistryImageResource{}
-	resp := &resource.SchemaResponse{}
-	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
-
-	if signing, ok := resp.Schema.Attributes["signing"].(schema.SingleNestedAttribute); ok {
-		names := make([]string, 0, len(signing.Attributes))
-		for name := range signing.Attributes {
-			names = append(names, name)
-		}
-
-		sort.Strings(names)
-
-		g := goldie.New(t, goldie.WithFixtureDir(".goldie"))
-		g.AssertJson(t, "registry_signing_attributes", names)
 	}
 }
 
@@ -541,7 +429,8 @@ func TestRegistryImageResource_Create(t *testing.T) {
 		wantErr    bool
 	}{
 		{
-			name: "success",
+			// Push succeeds but signing always fails against mock servers.
+			name: "success_push_signing_error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/push") {
 					w.WriteHeader(http.StatusOK)
@@ -559,20 +448,11 @@ func TestRegistryImageResource_Create(t *testing.T) {
 			planVals: func() map[string]tftypes.Value {
 				return minimalRegistryImagePlanVals("registry.example.com/test:v1")
 			},
-			checkState: func(t *testing.T, data RegistryImageResourceModel) {
-				t.Helper()
-
-				if data.ID.ValueString() != "registry.example.com/test:v1" {
-					t.Errorf("expected ID = name, got %q", data.ID.ValueString())
-				}
-
-				if data.Digest.ValueString() != "sha256:pushed789" {
-					t.Errorf("expected digest sha256:pushed789, got %q", data.Digest.ValueString())
-				}
-			},
+			wantErr: true,
 		},
 		{
-			name: "with_auth",
+			// Push with auth succeeds but signing always fails against mock servers.
+			name: "with_auth_signing_error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/push") {
 					creds := r.URL.Query().Get("credentials")
@@ -602,13 +482,7 @@ func TestRegistryImageResource_Create(t *testing.T) {
 					"pass",
 				)
 			},
-			checkState: func(t *testing.T, data RegistryImageResourceModel) {
-				t.Helper()
-
-				if data.Digest.ValueString() != "sha256:authed" {
-					t.Errorf("expected digest sha256:authed, got %q", data.Digest.ValueString())
-				}
-			},
+			wantErr: true,
 		},
 		{
 			name: "push_error",
@@ -626,7 +500,8 @@ func TestRegistryImageResource_Create(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "digest_fallback",
+			// Push succeeds with digest fallback but signing fails against mock servers.
+			name: "digest_fallback_signing_error",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.Contains(r.URL.Path, "/push"):
@@ -655,13 +530,7 @@ func TestRegistryImageResource_Create(t *testing.T) {
 			planVals: func() map[string]tftypes.Value {
 				return minimalRegistryImagePlanVals("registry.example.com/test:v1")
 			},
-			checkState: func(t *testing.T, data RegistryImageResourceModel) {
-				t.Helper()
-
-				if data.Digest.ValueString() != "registry.example.com/test@sha256:fallback" {
-					t.Errorf("expected fallback digest, got %q", data.Digest.ValueString())
-				}
-			},
+			wantErr: true,
 		},
 	}
 

@@ -61,6 +61,12 @@ func (c *SBOMClient) GenerateSBOM(ctx context.Context, opts SBOMOpts) error {
 	if err != nil {
 		return fmt.Errorf("failed to create image source for %s: %w", opts.ImageRef, err)
 	}
+	defer func() {
+		if closeErr := src.Close(); closeErr != nil {
+			tflog.Warn(ctx, "Failed to close syft image source (temp files may remain in /tmp)",
+				map[string]any{"error": closeErr.Error(), "image": opts.ImageRef})
+		}
+	}()
 
 	sbomResult, err := syft.CreateSBOM(ctx, src, syft.DefaultCreateSBOMConfig())
 	if err != nil {

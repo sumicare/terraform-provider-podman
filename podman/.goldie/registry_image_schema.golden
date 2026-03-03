@@ -1,8 +1,10 @@
 [
+  "attestation_path",
   "auth_config",
+  "cosign_public_key",
   "digest",
   "id",
   "keep_remotely",
   "name",
-  "signing"
+  "sbom_path"
 ]

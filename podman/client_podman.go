@@ -336,15 +336,7 @@ func tarDirectory(dir string) (io.Reader, error) {
 			return nil
 		}
 
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		_, err = io.Copy(tw, f)
-
-		return err
+		return copyFileToTar(tw, path)
 	})
 	if err != nil {
 		return nil, err
@@ -355,4 +347,16 @@ func tarDirectory(dir string) (io.Reader, error) {
 	}
 
 	return &buf, nil
+}
+
+func copyFileToTar(tw *tar.Writer, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	_, err = io.Copy(tw, f)
+
+	return err
 }

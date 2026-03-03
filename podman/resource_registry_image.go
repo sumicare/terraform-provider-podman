@@ -26,10 +26,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 var (
@@ -49,25 +49,14 @@ type (
 	}
 
 	RegistryImageResourceModel struct {
-		AuthConfig   *AuthConfigModel `tfsdk:"auth_config"`
-		Signing      *SigningModel    `tfsdk:"signing"`
-		ID           types.String     `tfsdk:"id"`
-		Name         types.String     `tfsdk:"name"`
-		Digest       types.String     `tfsdk:"digest"`
-		KeepRemotely types.Bool       `tfsdk:"keep_remotely"`
-	}
-
-	SigningModel struct {
-		CosignKeyPath      types.String `tfsdk:"cosign_key_path"`
-		CosignPassword     types.String `tfsdk:"cosign_password"`
-		FulcioURL          types.String `tfsdk:"fulcio_url"`
-		RekorURL           types.String `tfsdk:"rekor_url"`
-		AttestationPath    types.String `tfsdk:"attestation_path"`
-		PredicateType      types.String `tfsdk:"predicate_type"`
-		SBOMPath           types.String `tfsdk:"sbom_path"`
-		CosignKeyPathOut   types.String `tfsdk:"cosign_key_path_out"`
-		CosignPublicKeyOut types.String `tfsdk:"cosign_public_key_out"`
-		Keyless            types.Bool   `tfsdk:"keyless"`
+		AuthConfig      *AuthConfigModel `tfsdk:"auth_config"`
+		ID              types.String     `tfsdk:"id"`
+		Name            types.String     `tfsdk:"name"`
+		Digest          types.String     `tfsdk:"digest"`
+		SBOMPath        types.String     `tfsdk:"sbom_path"`
+		AttestationPath types.String     `tfsdk:"attestation_path"`
+		CosignPublicKey types.String     `tfsdk:"cosign_public_key"`
+		KeepRemotely    types.Bool       `tfsdk:"keep_remotely"`
 	}
 
 	AuthConfigModel struct {
@@ -144,12 +133,11 @@ func (r *RegistryImageResource) Create(
 		}
 	}
 
-	if data.Signing != nil {
-		r.signImage(ctx, &data, &resp.Diagnostics)
+	// Always sign, attach SBOM and attestation.
+	r.signImage(ctx, &data, &resp.Diagnostics)
 
-		if resp.Diagnostics.HasError() {
-			return
-		}
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -220,6 +208,18 @@ func (*RegistryImageResource) Schema(
 				Computed:    true,
 				Description: "The digest of the pushed image.",
 			},
+			"sbom_path": schema.StringAttribute{
+				Optional:    true,
+				Description: "Path to the CycloneDX SBOM file to attach. Typically from podman_image.sbom_path.",
+			},
+			"attestation_path": schema.StringAttribute{
+				Optional:    true,
+				Description: "Path to the witness attestation envelope to attach. Typically from podman_image.attestation_path.",
+			},
+			"cosign_public_key": schema.StringAttribute{
+				Computed:    true,
+				Description: "PEM-encoded cosign public key used for signing. Auto-generated in .cosign/ if not provided.",
+			},
 			"auth_config": schema.SingleNestedAttribute{
 				Optional:    true,
 				Description: "Authentication configuration for the registry.",
@@ -236,65 +236,6 @@ func (*RegistryImageResource) Schema(
 						Required:    true,
 						Sensitive:   true,
 						Description: "The password for registry authentication.",
-					},
-				},
-			},
-			"signing": schema.SingleNestedAttribute{
-				Optional: true,
-				Description: "Sigstore/cosign signing configuration. When set, the pushed image is signed " +
-					"using cosign after a successful push. Supports both key-based and keyless (Fulcio/Rekor) signing.",
-				PlanModifiers: []planmodifier.Object{
-					objectplanmodifier.RequiresReplaceIfConfigured(),
-				},
-				Attributes: map[string]schema.Attribute{
-					"cosign_key_path": schema.StringAttribute{
-						Optional:    true,
-						Sensitive:   true,
-						Description: "Path to the cosign private key for signing. Mutually exclusive with keyless.",
-					},
-					"cosign_password": schema.StringAttribute{
-						Optional:    true,
-						Sensitive:   true,
-						Description: "Password for the cosign private key. Set via COSIGN_PASSWORD env var if omitted.",
-					},
-					"keyless": schema.BoolAttribute{
-						Optional:    true,
-						Computed:    true,
-						Default:     booldefault.StaticBool(false),
-						Description: "Use keyless signing via Sigstore Fulcio and Rekor (OIDC-based).",
-					},
-					"fulcio_url": schema.StringAttribute{
-						Optional:    true,
-						Description: "Custom Fulcio server URL for keyless signing.",
-					},
-					"rekor_url": schema.StringAttribute{
-						Optional:    true,
-						Description: "Custom Rekor transparency log URL.",
-					},
-					"attestation_path": schema.StringAttribute{
-						Optional: true,
-						Description: "Path to a witness attestation envelope (DSSE JSON) to attach to the image " +
-							"via `cosign attest`. Typically produced by the podman_image attestation block.",
-					},
-					"predicate_type": schema.StringAttribute{
-						Optional: true,
-						Description: "The in-toto predicate type for the attestation (e.g., 'slsaprovenance', 'custom'). " +
-							"Defaults to cosign's auto-detection if omitted.",
-					},
-					"sbom_path": schema.StringAttribute{
-						Optional: true,
-						Description: "Path to a CycloneDX/SPDX SBOM file to attach to the image " +
-							"via `cosign attest --type cyclonedx`. Typically produced by the podman_image sbom block.",
-					},
-					"cosign_key_path_out": schema.StringAttribute{
-						Computed: true,
-						Description: "The cosign private key path used for signing. If cosign_key_path was provided, " +
-							"this reflects that input. Otherwise, it is the path to the auto-generated key.",
-					},
-					"cosign_public_key_out": schema.StringAttribute{
-						Computed: true,
-						Description: "The cosign public key path. If a key pair was auto-generated, this is " +
-							"the path to the public key. Empty when an existing key was provided.",
 					},
 				},
 			},
@@ -325,6 +266,11 @@ func (r *RegistryImageResource) Delete(
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	tflog.Info(ctx, "Registry image delete is a no-op (registry deletion not supported by Podman API)", map[string]any{
+		"name":          data.Name.ValueString(),
+		"keep_remotely": data.KeepRemotely.ValueBool(),
+	})
 }
 
 func (*RegistryImageResource) ImportState(
@@ -340,7 +286,6 @@ func (r *RegistryImageResource) signImage(
 	data *RegistryImageResourceModel,
 	diags *diag.Diagnostics,
 ) {
-	signing := data.Signing
 	name := data.Name.ValueString()
 
 	// Prefer digest reference for immutability.
@@ -359,77 +304,41 @@ func (r *RegistryImageResource) signImage(
 		}
 	}
 
-	keyPath := ""
-	if !signing.CosignKeyPath.IsNull() {
-		keyPath = signing.CosignKeyPath.ValueString()
-	}
-
-	password := ""
-	if !signing.CosignPassword.IsNull() {
-		password = signing.CosignPassword.ValueString()
-	}
-
-	keyless := signing.Keyless.ValueBool()
-
-	fulcioURL := ""
-	if !signing.FulcioURL.IsNull() {
-		fulcioURL = signing.FulcioURL.ValueString()
-	}
-
-	rekorURL := ""
-	if !signing.RekorURL.IsNull() {
-		rekorURL = signing.RekorURL.ValueString()
-	}
-
 	cosignClient := NewCosignClient()
 
-	switch {
-	case keyPath == "" && !keyless:
-		result, err := cosignClient.EnsureKeyPair(ctx, ".cosign")
-		if err != nil {
-			diags.AddError(
-				"Error generating cosign key pair",
-				"Could not generate cosign key pair: "+err.Error(),
-			)
+	result, err := cosignClient.EnsureKeyPair(ctx, ".cosign")
+	if err != nil {
+		diags.AddError(
+			"Error generating cosign key pair",
+			"Could not generate cosign key pair: "+err.Error(),
+		)
 
-			return
-		}
-
-		if result.Reused {
-			diags.AddWarning(
-				"Reusing auto-generated cosign key pair",
-				fmt.Sprintf("No cosign_key_path was provided. Reusing existing key pair at %s. "+
-					"Set cosign_key_path explicitly to use your own key.", result.PrivateKeyPath),
-			)
-		} else {
-			diags.AddWarning(
-				"Auto-generated cosign key pair",
-				fmt.Sprintf(
-					"No cosign_key_path was provided. A new cosign key pair was generated at %s. "+
-						"Set cosign_key_path explicitly to use your own key.",
-					result.PrivateKeyPath,
-				),
-			)
-		}
-
-		keyPath = result.PrivateKeyPath
-		signing.CosignKeyPathOut = types.StringValue(result.PrivateKeyPath)
-		signing.CosignPublicKeyOut = types.StringValue(result.PublicKeyPath)
-	case keyPath != "":
-		signing.CosignKeyPathOut = types.StringValue(keyPath)
-		signing.CosignPublicKeyOut = types.StringValue("")
-	default:
-		signing.CosignKeyPathOut = types.StringValue("")
-		signing.CosignPublicKeyOut = types.StringValue("")
+		return
 	}
 
-	err := cosignClient.SignImage(ctx, SignOpts{
-		ImageRef:  imageRef,
-		KeyPath:   keyPath,
-		Password:  password,
-		Keyless:   keyless,
-		FulcioURL: fulcioURL,
-		RekorURL:  rekorURL,
+	if result.Reused {
+		diags.AddWarning(
+			"Reusing auto-generated cosign key pair",
+			fmt.Sprintf("Reusing existing key pair at %s.", result.PrivateKeyPath),
+		)
+	} else {
+		diags.AddWarning(
+			"Auto-generated cosign key pair",
+			fmt.Sprintf(
+				"A new cosign key pair was generated at %s.",
+				result.PrivateKeyPath,
+			),
+		)
+	}
+
+	keyPath := result.PrivateKeyPath
+	passphrase := result.Passphrase
+	data.CosignPublicKey = types.StringValue(string(result.PublicKeyPEM))
+
+	err = cosignClient.SignImage(ctx, SignOpts{
+		ImageRef: imageRef,
+		KeyPath:  keyPath,
+		Password: passphrase,
 	})
 	if err != nil {
 		diags.AddError(
@@ -440,21 +349,29 @@ func (r *RegistryImageResource) signImage(
 		return
 	}
 
-	if !signing.AttestationPath.IsNull() && signing.AttestationPath.ValueString() != "" {
-		predicateType := ""
-		if !signing.PredicateType.IsNull() {
-			predicateType = signing.PredicateType.ValueString()
-		}
+	// Post-sign verification to confirm the signature is valid.
+	verifyErr := cosignClient.VerifyImage(ctx, VerifyOpts{
+		ImageRef: imageRef,
+		KeyPath:  result.PublicKeyPath,
+		SkipTlog: true,
+	})
+	if verifyErr != nil {
+		diags.AddWarning(
+			"Post-sign verification failed",
+			fmt.Sprintf("Signature was created but verification failed for %s: %s. "+
+				"This may indicate the registry does not support OCI referrers.",
+				imageRef, verifyErr.Error()),
+		)
+	}
 
+	// Attach in-toto attestation if path is provided.
+	if !data.AttestationPath.IsNull() && data.AttestationPath.ValueString() != "" {
 		err = cosignClient.AttestImage(ctx, AttestOpts{
 			ImageRef:      imageRef,
 			KeyPath:       keyPath,
-			Password:      password,
-			Keyless:       keyless,
-			FulcioURL:     fulcioURL,
-			RekorURL:      rekorURL,
-			PredicatePath: signing.AttestationPath.ValueString(),
-			PredicateType: predicateType,
+			Password:      passphrase,
+			PredicatePath: data.AttestationPath.ValueString(),
+			PredicateType: "custom",
 		})
 		if err != nil {
 			diags.AddError(
@@ -466,15 +383,13 @@ func (r *RegistryImageResource) signImage(
 		}
 	}
 
-	if !signing.SBOMPath.IsNull() && signing.SBOMPath.ValueString() != "" {
+	// Attach SBOM if path is provided.
+	if !data.SBOMPath.IsNull() && data.SBOMPath.ValueString() != "" {
 		err = cosignClient.AttestImage(ctx, AttestOpts{
 			ImageRef:      imageRef,
 			KeyPath:       keyPath,
-			Password:      password,
-			Keyless:       keyless,
-			FulcioURL:     fulcioURL,
-			RekorURL:      rekorURL,
-			PredicatePath: signing.SBOMPath.ValueString(),
+			Password:      passphrase,
+			PredicatePath: data.SBOMPath.ValueString(),
 			PredicateType: "cyclonedx",
 		})
 		if err != nil {
