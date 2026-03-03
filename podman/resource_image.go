@@ -531,22 +531,17 @@ func (r *ImageResource) buildWithAttestation(
 		return err
 	}
 
+	action := "Auto-generated"
 	if result.Reused {
-		diags.AddWarning(
-			"Reusing auto-generated cosign key pair",
-			fmt.Sprintf("Reusing existing key pair at %s. "+
-				"Provide cosign_key_path in the provider config to use your own key.", result.PrivateKeyPath),
-		)
-	} else {
-		diags.AddWarning(
-			"Auto-generated cosign key pair",
-			fmt.Sprintf(
-				"A new cosign key pair was generated at %s. "+
-					"Provide cosign_key_path in the provider config to use your own key.",
-				result.PrivateKeyPath,
-			),
-		)
+		action = "Reusing"
 	}
+
+	diags.AddWarning(
+		action+" cosign key pair",
+		fmt.Sprintf("%s key pair at %s. "+
+			"Provide cosign_key_path in the provider config to use your own key.",
+			action, result.PrivateKeyPath),
+	)
 
 	data.CosignPublicKey = types.StringValue(string(result.PublicKeyPEM))
 
@@ -600,6 +595,46 @@ func (r *ImageResource) generateSBOM(
 	}
 }
 
+// resolveArtifactPath returns the path for an artifact file, populating the
+// state field if it is empty.
+func resolveArtifactPath(imageName, suffix string, field *types.String) string {
+	if !field.IsNull() && field.ValueString() != "" {
+		return field.ValueString()
+	}
+
+	p := filepath.Join(".sbom", imageBaseName(imageName)+suffix)
+	*field = types.StringValue(p)
+
+	return p
+}
+
+// restoreFileFromState writes content from state to disk if the file is
+// missing. Returns true when the file already exists or was restored.
+func restoreFileFromState(ctx context.Context, filePath string, content types.String, perm os.FileMode) bool {
+	if _, err := os.Stat(filePath); err == nil {
+		return true
+	}
+
+	if content.IsNull() || content.ValueString() == "" {
+		return false
+	}
+
+	tflog.Info(ctx, "Restoring file from state", map[string]any{"path": filePath})
+
+	if dir := filepath.Dir(filePath); dir != "" {
+		_ = os.MkdirAll(dir, 0o755)
+	}
+
+	if err := os.WriteFile(filePath, []byte(content.ValueString()), perm); err != nil {
+		tflog.Warn(ctx, "File restore from state failed",
+			map[string]any{"path": filePath, "error": err.Error()})
+
+		return false
+	}
+
+	return true
+}
+
 // ensureSBOM restores the CycloneDX SBOM from state when the file is missing
 // on disk. Falls back to regeneration if state content is empty (backward compat).
 func (r *ImageResource) ensureSBOM(
@@ -607,37 +642,9 @@ func (r *ImageResource) ensureSBOM(
 	data *ImageResourceModel,
 	diags *diag.Diagnostics,
 ) {
-	baseName := imageBaseName(data.Name.ValueString())
-	sbomPath := filepath.Join(".sbom", baseName+".cyclonedx.json")
+	sbomPath := resolveArtifactPath(data.Name.ValueString(), ".cyclonedx.json", &data.SBOMPath)
 
-	// Always ensure sbom_path is populated in state.
-	if data.SBOMPath.IsNull() || data.SBOMPath.ValueString() == "" {
-		data.SBOMPath = types.StringValue(sbomPath)
-	} else {
-		sbomPath = data.SBOMPath.ValueString()
-	}
-
-	// If the file already exists, nothing to do.
-	if _, err := os.Stat(sbomPath); err == nil {
-		return
-	}
-
-	// Restore from state if available.
-	if !data.SBOMContent.IsNull() && data.SBOMContent.ValueString() != "" {
-		tflog.Info(ctx, "SBOM file missing, restoring from state", map[string]any{
-			"image": data.Name.ValueString(),
-			"path":  sbomPath,
-		})
-
-		if dir := filepath.Dir(sbomPath); dir != "" {
-			_ = os.MkdirAll(dir, 0o755)
-		}
-
-		if err := os.WriteFile(sbomPath, []byte(data.SBOMContent.ValueString()), 0o644); err != nil {
-			tflog.Warn(ctx, "SBOM restore from state failed",
-				map[string]any{"error": err.Error()})
-		}
-
+	if restoreFileFromState(ctx, sbomPath, data.SBOMContent, 0o644) {
 		return
 	}
 
@@ -650,60 +657,27 @@ func (r *ImageResource) ensureSBOM(
 	var sbomDiags diag.Diagnostics
 	r.generateSBOM(ctx, data, &sbomDiags)
 
-	if sbomDiags.HasError() {
-		for _, d := range sbomDiags.Errors() {
-			tflog.Warn(ctx, "SBOM backfill failed (non-fatal)",
-				map[string]any{"summary": d.Summary(), "detail": d.Detail()})
-			diags.AddWarning(d.Summary(), d.Detail()+
-				" Install syft to enable automatic SBOM generation.")
-		}
+	for _, d := range sbomDiags.Errors() {
+		tflog.Warn(ctx, "SBOM backfill failed (non-fatal)",
+			map[string]any{"summary": d.Summary(), "detail": d.Detail()})
+		diags.AddWarning(d.Summary(), d.Detail()+
+			" Install syft to enable automatic SBOM generation.")
 	}
 }
 
 // ensureAttestation restores the in-toto witness attestation from state when
-// the file is missing on disk. The original build attestation bytes are stored
-// in state so they can be restored byte-for-byte.
-func (r *ImageResource) ensureAttestation(
+// the file is missing on disk.
+func (*ImageResource) ensureAttestation(
 	ctx context.Context,
 	data *ImageResourceModel,
 	diags *diag.Diagnostics,
 ) {
-	baseName := imageBaseName(data.Name.ValueString())
-	attestPath := filepath.Join(".sbom", baseName+".intoto.json")
+	attestPath := resolveArtifactPath(data.Name.ValueString(), ".intoto.json", &data.AttestationPath)
 
-	// Always ensure attestation_path is populated in state.
-	if data.AttestationPath.IsNull() || data.AttestationPath.ValueString() == "" {
-		data.AttestationPath = types.StringValue(attestPath)
-	} else {
-		attestPath = data.AttestationPath.ValueString()
-	}
-
-	// If the file already exists, nothing to do.
-	if _, err := os.Stat(attestPath); err == nil {
+	if restoreFileFromState(ctx, attestPath, data.AttestationContent, 0o600) {
 		return
 	}
 
-	// Restore from state if available.
-	if !data.AttestationContent.IsNull() && data.AttestationContent.ValueString() != "" {
-		tflog.Info(ctx, "Attestation file missing, restoring from state", map[string]any{
-			"image": data.Name.ValueString(),
-			"path":  attestPath,
-		})
-
-		if dir := filepath.Dir(attestPath); dir != "" {
-			_ = os.MkdirAll(dir, 0o755)
-		}
-
-		if err := os.WriteFile(attestPath, []byte(data.AttestationContent.ValueString()), 0o600); err != nil {
-			tflog.Warn(ctx, "Attestation restore from state failed",
-				map[string]any{"error": err.Error()})
-		}
-
-		return
-	}
-
-	tflog.Warn(ctx, "Attestation file missing and no state content available",
-		map[string]any{"image": data.Name.ValueString(), "path": attestPath})
 	diags.AddWarning(
 		"Attestation file missing",
 		fmt.Sprintf("Attestation for %s is missing and cannot be restored. "+
@@ -711,25 +685,29 @@ func (r *ImageResource) ensureAttestation(
 	)
 }
 
-// captureFileContents reads the SBOM and attestation files from disk and
-// stores their content in state so they can be restored if deleted.
+// captureFileContents reads artifact files from disk and stores their content
+// in state so they can be restored if deleted.
 func (*ImageResource) captureFileContents(ctx context.Context, data *ImageResourceModel) {
-	if path := data.SBOMPath.ValueString(); path != "" {
-		if content, err := os.ReadFile(path); err == nil {
-			data.SBOMContent = types.StringValue(string(content))
-		} else {
-			tflog.Warn(ctx, "Could not read SBOM for state capture",
-				map[string]any{"path": path, "error": err.Error()})
+	for _, item := range []struct {
+		path   string
+		target *types.String
+	}{
+		{data.SBOMPath.ValueString(), &data.SBOMContent},
+		{data.AttestationPath.ValueString(), &data.AttestationContent},
+	} {
+		if item.path == "" {
+			continue
 		}
-	}
 
-	if path := data.AttestationPath.ValueString(); path != "" {
-		if content, err := os.ReadFile(path); err == nil {
-			data.AttestationContent = types.StringValue(string(content))
-		} else {
-			tflog.Warn(ctx, "Could not read attestation for state capture",
-				map[string]any{"path": path, "error": err.Error()})
+		content, err := os.ReadFile(item.path)
+		if err != nil {
+			tflog.Warn(ctx, "Could not read file for state capture",
+				map[string]any{"path": item.path, "error": err.Error()})
+
+			continue
 		}
+
+		*item.target = types.StringValue(string(content))
 	}
 }
 
@@ -752,10 +730,5 @@ func (r *ImageResource) readImageState(
 	}
 
 	data.ID = types.StringValue(result.ID)
-
-	if result.RepoDigest != "" {
-		data.RepoDigest = types.StringValue(result.RepoDigest)
-	} else {
-		data.RepoDigest = types.StringValue("")
-	}
+	data.RepoDigest = types.StringValue(result.RepoDigest)
 }
