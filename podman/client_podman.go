@@ -102,13 +102,18 @@ func (c *PodmanClient) BuildImage(ctx context.Context, opts ImageBuildOpts) erro
 	params.Set("platform", "linux/"+runtime.GOARCH)
 
 	if opts.Pull {
-		params.Set("pull", "always")
+		params.Set("pull", "true")
 	} else {
-		params.Set("pull", "never")
+		params.Set("pull", "false")
 	}
 
-	for k, v := range opts.BuildArgs {
-		params.Add("buildargs", fmt.Sprintf(`{%q:%q}`, k, v))
+	if len(opts.BuildArgs) > 0 {
+		argsJSON, err := json.Marshal(opts.BuildArgs)
+		if err != nil {
+			return fmt.Errorf("could not marshal build args: %w", err)
+		}
+
+		params.Set("buildargs", string(argsJSON))
 	}
 
 	reqURL := c.baseURL + "/v5.0.0/libpod/build?" + params.Encode()
@@ -128,6 +133,17 @@ func (c *PodmanClient) BuildImage(ctx context.Context, opts ImageBuildOpts) erro
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+
+		return fmt.Errorf(
+			"could not build image %s: unexpected status %d: %s",
+			opts.Tag,
+			resp.StatusCode,
+			string(body),
+		)
+	}
+
 	decoder := json.NewDecoder(resp.Body)
 	for decoder.More() {
 		var event map[string]any
@@ -140,14 +156,6 @@ func (c *PodmanClient) BuildImage(ctx context.Context, opts ImageBuildOpts) erro
 		if errMsg, ok := event["error"].(string); ok && errMsg != "" {
 			return fmt.Errorf("could not build image %s: %s", opts.Tag, errMsg)
 		}
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf(
-			"could not build image %s: unexpected status %d",
-			opts.Tag,
-			resp.StatusCode,
-		)
 	}
 
 	return nil

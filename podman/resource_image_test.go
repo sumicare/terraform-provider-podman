@@ -1306,13 +1306,22 @@ func TestPodmanClient_DoRequest_WithBody(t *testing.T) {
 func TestPodmanClient_BuildImage_WithPullAndArgs(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pull := r.URL.Query().Get("pull")
-		if pull != "always" {
-			t.Errorf("expected pull=always, got %q", pull)
+		if pull != "true" {
+			t.Errorf("expected pull=true, got %q", pull)
 		}
 
-		buildArgs := r.URL.Query()["buildargs"]
-		if len(buildArgs) == 0 {
-			t.Error("expected at least one buildarg")
+		buildArgsRaw := r.URL.Query().Get("buildargs")
+		if buildArgsRaw == "" {
+			t.Error("expected buildargs query parameter")
+		}
+
+		var buildArgs map[string]string
+		if err := json.Unmarshal([]byte(buildArgsRaw), &buildArgs); err != nil {
+			t.Errorf("expected buildargs to be valid JSON, got error: %v", err)
+		}
+
+		if buildArgs["VERSION"] != "1.0" {
+			t.Errorf("expected buildarg VERSION=1.0, got %q", buildArgs["VERSION"])
 		}
 
 		_, _ = io.Copy(io.Discard, r.Body)

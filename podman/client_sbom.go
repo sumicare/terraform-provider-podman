@@ -28,6 +28,7 @@ import (
 	"github.com/anchore/syft/syft/format/spdxjson"
 	"github.com/anchore/syft/syft/sbom"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	_ "modernc.org/sqlite" // SQLite driver required by syft for cataloging RPM databases
 )
 
 type SBOMClient struct{}
