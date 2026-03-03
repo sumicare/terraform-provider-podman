@@ -57,14 +57,16 @@ func buildObjectType() tftypes.Object {
 
 func minimalImagePlanVals(name, contextDir string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
-		"id":                tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"name":              tftypes.NewValue(tftypes.String, name),
-		"repo_digest":       tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"keep_locally":      tftypes.NewValue(tftypes.Bool, false),
-		"context_hash":      tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"sbom_path":         tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"attestation_path":  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"cosign_public_key": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"id":                  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"name":                tftypes.NewValue(tftypes.String, name),
+		"repo_digest":         tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"keep_locally":        tftypes.NewValue(tftypes.Bool, false),
+		"context_hash":        tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"sbom_path":           tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"sbom_content":        tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"attestation_path":    tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"attestation_content": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"cosign_public_key":   tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
 		"build": tftypes.NewValue(buildObjectType(), map[string]tftypes.Value{
 			"context":    tftypes.NewValue(tftypes.String, contextDir),
 			"build_args": tftypes.NewValue(tftypes.Map{ElementType: tftypes.String}, nil),
@@ -75,14 +77,16 @@ func minimalImagePlanVals(name, contextDir string) map[string]tftypes.Value {
 
 func minimalImageStateVals(name string) map[string]tftypes.Value {
 	return map[string]tftypes.Value{
-		"id":                tftypes.NewValue(tftypes.String, "sha256:abc123def"),
-		"name":              tftypes.NewValue(tftypes.String, name),
-		"repo_digest":       tftypes.NewValue(tftypes.String, "localhost/test@sha256:abc123def"),
-		"keep_locally":      tftypes.NewValue(tftypes.Bool, false),
-		"context_hash":      tftypes.NewValue(tftypes.String, "somehash"),
-		"sbom_path":         tftypes.NewValue(tftypes.String, ""),
-		"attestation_path":  tftypes.NewValue(tftypes.String, ""),
-		"cosign_public_key": tftypes.NewValue(tftypes.String, ""),
+		"id":                  tftypes.NewValue(tftypes.String, "sha256:abc123def"),
+		"name":                tftypes.NewValue(tftypes.String, name),
+		"repo_digest":         tftypes.NewValue(tftypes.String, "localhost/test@sha256:abc123def"),
+		"keep_locally":        tftypes.NewValue(tftypes.Bool, false),
+		"context_hash":        tftypes.NewValue(tftypes.String, "somehash"),
+		"sbom_path":           tftypes.NewValue(tftypes.String, ""),
+		"sbom_content":        tftypes.NewValue(tftypes.String, ""),
+		"attestation_path":    tftypes.NewValue(tftypes.String, ""),
+		"attestation_content": tftypes.NewValue(tftypes.String, ""),
+		"cosign_public_key":   tftypes.NewValue(tftypes.String, ""),
 		"build": tftypes.NewValue(buildObjectType(), map[string]tftypes.Value{
 			"context":    tftypes.NewValue(tftypes.String, "."),
 			"build_args": tftypes.NewValue(tftypes.Map{ElementType: tftypes.String}, nil),
@@ -526,7 +530,7 @@ func TestImageResource_Schema_ComputedOutputs(t *testing.T) {
 	resp := &resource.SchemaResponse{}
 	r.Schema(t.Context(), resource.SchemaRequest{}, resp)
 
-	for _, attr := range []string{"sbom_path", "attestation_path", "cosign_public_key"} {
+	for _, attr := range []string{"sbom_path", "sbom_content", "attestation_path", "attestation_content", "cosign_public_key"} {
 		a, ok := resp.Schema.Attributes[attr].(schema.StringAttribute)
 		if !ok {
 			t.Errorf("expected %q to be a StringAttribute", attr)
@@ -938,15 +942,17 @@ func TestContextHashPlanModifier_InvalidContext(t *testing.T) {
 
 func TestContextHashPlanModifier_NilBuild(t *testing.T) {
 	vals := map[string]tftypes.Value{
-		"id":                tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"name":              tftypes.NewValue(tftypes.String, "test:v1"),
-		"repo_digest":       tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"keep_locally":      tftypes.NewValue(tftypes.Bool, false),
-		"context_hash":      tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"sbom_path":         tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"attestation_path":  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"cosign_public_key": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
-		"build":             tftypes.NewValue(buildObjectType(), nil),
+		"id":                  tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"name":                tftypes.NewValue(tftypes.String, "test:v1"),
+		"repo_digest":         tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"keep_locally":        tftypes.NewValue(tftypes.Bool, false),
+		"context_hash":        tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"sbom_path":           tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"sbom_content":        tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"attestation_path":    tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"attestation_content": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"cosign_public_key":   tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"build":               tftypes.NewValue(buildObjectType(), nil),
 	}
 
 	plan := makePlan(t, &ImageResource{}, vals)

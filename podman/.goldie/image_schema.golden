@@ -1,4 +1,5 @@
 [
+  "attestation_content",
   "attestation_path",
   "build",
   "context_hash",
@@ -7,5 +8,6 @@
   "keep_locally",
   "name",
   "repo_digest",
+  "sbom_content",
   "sbom_path"
 ]

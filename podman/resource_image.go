@@ -58,15 +58,17 @@ type ImageBuildModel struct {
 }
 
 type ImageResourceModel struct {
-	Build           *ImageBuildModel `tfsdk:"build"`
-	ID              types.String     `tfsdk:"id"`
-	Name            types.String     `tfsdk:"name"`
-	RepoDigest      types.String     `tfsdk:"repo_digest"`
-	ContextHash     types.String     `tfsdk:"context_hash"`
-	SBOMPath        types.String     `tfsdk:"sbom_path"`
-	AttestationPath types.String     `tfsdk:"attestation_path"`
-	CosignPublicKey types.String     `tfsdk:"cosign_public_key"`
-	KeepLocally     types.Bool       `tfsdk:"keep_locally"`
+	Build              *ImageBuildModel `tfsdk:"build"`
+	ID                 types.String     `tfsdk:"id"`
+	Name               types.String     `tfsdk:"name"`
+	RepoDigest         types.String     `tfsdk:"repo_digest"`
+	ContextHash        types.String     `tfsdk:"context_hash"`
+	SBOMPath           types.String     `tfsdk:"sbom_path"`
+	SBOMContent        types.String     `tfsdk:"sbom_content"`
+	AttestationPath    types.String     `tfsdk:"attestation_path"`
+	AttestationContent types.String     `tfsdk:"attestation_content"`
+	CosignPublicKey    types.String     `tfsdk:"cosign_public_key"`
+	KeepLocally        types.Bool       `tfsdk:"keep_locally"`
 }
 
 // imageBaseName extracts a short base name from a full image reference for
@@ -249,6 +251,9 @@ func (r *ImageResource) Create(
 		}
 	}
 
+	// Persist file contents in state so they can be restored if deleted.
+	r.captureFileContents(ctx, &data)
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -352,9 +357,19 @@ func (*ImageResource) Schema(
 				Computed:    true,
 				Description: "Path where the CycloneDX SBOM was written. Always generated under .sbom/ directory.",
 			},
+			"sbom_content": schema.StringAttribute{
+				Computed:    true,
+				Sensitive:   true,
+				Description: "CycloneDX SBOM content stored in state for restore.",
+			},
 			"attestation_path": schema.StringAttribute{
 				Computed:    true,
 				Description: "Path where the in-toto witness attestation envelope was written. Always generated under .sbom/ directory.",
+			},
+			"attestation_content": schema.StringAttribute{
+				Computed:    true,
+				Sensitive:   true,
+				Description: "In-toto witness attestation envelope stored in state for restore.",
 			},
 			"cosign_public_key": schema.StringAttribute{
 				Computed:    true,
@@ -585,8 +600,8 @@ func (r *ImageResource) generateSBOM(
 	}
 }
 
-// ensureSBOM backfills the CycloneDX SBOM when the file is missing on disk.
-// This handles images that were built before SBOM generation was always-on.
+// ensureSBOM restores the CycloneDX SBOM from state when the file is missing
+// on disk. Falls back to regeneration if state content is empty (backward compat).
 func (r *ImageResource) ensureSBOM(
 	ctx context.Context,
 	data *ImageResourceModel,
@@ -607,7 +622,27 @@ func (r *ImageResource) ensureSBOM(
 		return
 	}
 
-	tflog.Info(ctx, "SBOM file missing, regenerating", map[string]any{
+	// Restore from state if available.
+	if !data.SBOMContent.IsNull() && data.SBOMContent.ValueString() != "" {
+		tflog.Info(ctx, "SBOM file missing, restoring from state", map[string]any{
+			"image": data.Name.ValueString(),
+			"path":  sbomPath,
+		})
+
+		if dir := filepath.Dir(sbomPath); dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
+
+		if err := os.WriteFile(sbomPath, []byte(data.SBOMContent.ValueString()), 0o644); err != nil {
+			tflog.Warn(ctx, "SBOM restore from state failed",
+				map[string]any{"error": err.Error()})
+		}
+
+		return
+	}
+
+	// Fallback: regenerate if state content is empty (pre-existing resources).
+	tflog.Info(ctx, "SBOM file missing, regenerating (no state content)", map[string]any{
 		"image": data.Name.ValueString(),
 		"path":  sbomPath,
 	})
@@ -625,9 +660,9 @@ func (r *ImageResource) ensureSBOM(
 	}
 }
 
-// ensureAttestation backfills the in-toto witness attestation when the file
-// is missing on disk. The restored attestation uses step name "restore" so
-// verifiers can distinguish it from original build attestations.
+// ensureAttestation restores the in-toto witness attestation from state when
+// the file is missing on disk. The original build attestation bytes are stored
+// in state so they can be restored byte-for-byte.
 func (r *ImageResource) ensureAttestation(
 	ctx context.Context,
 	data *ImageResourceModel,
@@ -648,48 +683,53 @@ func (r *ImageResource) ensureAttestation(
 		return
 	}
 
-	tflog.Info(ctx, "Attestation file missing, restoring", map[string]any{
-		"image": data.Name.ValueString(),
-		"path":  attestPath,
-	})
+	// Restore from state if available.
+	if !data.AttestationContent.IsNull() && data.AttestationContent.ValueString() != "" {
+		tflog.Info(ctx, "Attestation file missing, restoring from state", map[string]any{
+			"image": data.Name.ValueString(),
+			"path":  attestPath,
+		})
 
-	cosignClient := NewCosignClient()
+		if dir := filepath.Dir(attestPath); dir != "" {
+			_ = os.MkdirAll(dir, 0o755)
+		}
 
-	result, err := cosignClient.EnsureKeyPair(ctx, ".cosign")
-	if err != nil {
-		tflog.Warn(ctx, "Attestation restore skipped: could not ensure key pair",
-			map[string]any{"error": err.Error()})
-		diags.AddWarning(
-			"Attestation restore skipped",
-			"Could not ensure cosign key pair for attestation restore: "+err.Error(),
-		)
+		if err := os.WriteFile(attestPath, []byte(data.AttestationContent.ValueString()), 0o600); err != nil {
+			tflog.Warn(ctx, "Attestation restore from state failed",
+				map[string]any{"error": err.Error()})
+		}
 
 		return
 	}
 
-	data.CosignPublicKey = types.StringValue(string(result.PublicKeyPEM))
+	tflog.Warn(ctx, "Attestation file missing and no state content available",
+		map[string]any{"image": data.Name.ValueString(), "path": attestPath})
+	diags.AddWarning(
+		"Attestation file missing",
+		fmt.Sprintf("Attestation for %s is missing and cannot be restored. "+
+			"It will be recreated on the next image rebuild.", data.Name.ValueString()),
+	)
+}
 
-	witness := NewWitnessClient()
+// captureFileContents reads the SBOM and attestation files from disk and
+// stores their content in state so they can be restored if deleted.
+func (*ImageResource) captureFileContents(ctx context.Context, data *ImageResourceModel) {
+	if path := data.SBOMPath.ValueString(); path != "" {
+		if content, err := os.ReadFile(path); err == nil {
+			data.SBOMContent = types.StringValue(string(content))
+		} else {
+			tflog.Warn(ctx, "Could not read SBOM for state capture",
+				map[string]any{"path": path, "error": err.Error()})
+		}
+	}
 
-	// Use the .sbom directory as working dir so the product attestor
-	// picks up the CycloneDX SBOM file.
-	workingDir := filepath.Dir(attestPath)
-
-	restoreErr := witness.RestoreAttestation(ctx, WitnessRunOpts{
-		StepName:      "restore",
-		SignerKeyPath: result.PrivateKeyPath,
-		Passphrase:    result.Passphrase,
-		OutputPath:    attestPath,
-		WorkingDir:    workingDir,
-	})
-	if restoreErr != nil {
-		tflog.Warn(ctx, "Attestation restore failed (non-fatal)",
-			map[string]any{"error": restoreErr.Error()})
-		diags.AddWarning(
-			"Attestation restore failed",
-			fmt.Sprintf("Could not restore attestation for %s: %s",
-				data.Name.ValueString(), restoreErr.Error()),
-		)
+	if path := data.AttestationPath.ValueString(); path != "" {
+		if content, err := os.ReadFile(path); err == nil {
+			data.AttestationContent = types.StringValue(string(content))
+		} else {
+			tflog.Warn(ctx, "Could not read attestation for state capture",
+				map[string]any{"path": path, "error": err.Error()})
+		}
 	}
 }
 
