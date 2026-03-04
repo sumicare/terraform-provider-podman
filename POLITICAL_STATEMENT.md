@@ -1,4 +1,4 @@
-##  Terms of Use
+##  Political Statement
 
 By using this project for academic, advertising, enterprise, or any other purpose, you grant your <b>Implicit Agreement</b> to the following:
 

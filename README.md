@@ -231,6 +231,6 @@ TF_ACC=1 go test -v -cover -timeout=20m ./...
 
 Copyright 2026 **[Sumicare](https://sumi.care)**
 
-By using this project for academic, advertising, enterprise, or any other purpose, you grant your **Implicit Agreement** to the Sumicare OSS [Terms of Use](OSS_TERMS.md).
-
 Sumicare OpenTofu Provider Podman is licensed under the terms of [Apache License 2.0](LICENSE).
+
+The **[Political Statement](POLITICAL_STATEMENT.md)** outlines the maintainer’s principles and project policies, it does not modify or supersede the Apache License 2.0 terms.
